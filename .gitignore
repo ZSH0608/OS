@@ -1,0 +1,16 @@
+# macOS
+.DS_Store
+
+# 编译产物
+lab1/bin/
+lab1/obj/
+*.o
+*.d
+
+# 调试与打包临时文件
+*.out
+*.tar.gz
+.gdb.in
+.qemu.out
+cscope.*
+tags
