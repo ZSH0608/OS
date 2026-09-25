@@ -1,6 +1,9 @@
 # macOS
 .DS_Store
 
+# 本地笔记，不纳入仓库
+lab1/notes/
+
 # 编译产物
 lab1/bin/
 lab1/obj/
