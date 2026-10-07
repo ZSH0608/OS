@@ -160,7 +160,7 @@ uint64_t sbi_call(uint64_t sbi_type, uint64_t arg0, uint64_t arg1, uint64_t arg2
 
 **负责人：2413157-张书晗、2411514-蒲富坤、2412888-刚栋冰** 
 
-![练习1](pic/练习1.png)
+![练习1](images/练习1.png)
 
 - `la sp, bootstacktop`：
   - la = Load Address（伪指令，实际会被展开为 lui + addi 两条指令）
@@ -180,11 +180,11 @@ uint64_t sbi_call(uint64_t sbi_type, uint64_t arg0, uint64_t arg1, uint64_t arg2
 
 首先，我们开两个终端：终端 A 执行 `make debug`，终端 B 执行 `make gdb` 连接。连接后发现当前 `PC = 0x1000`，GDB 显示 `?? ()` 是因为复位 ROM 不在内核符号表里，说明 RISC-V 在 QEMU virt 上加电后从复位地址 `0x1000` 开始执行。
 
-![上电后](pic/上电后.png)
+![上电后](images/上电后.png)
 
 然后，我们用 `x/8i 0x1000` 反汇编最初几条指令，前 6 条是有效代码，第6条跳转到 `t0`，即进入 OpenSBI；`0x1018` 起已进入数据区，但 GDB 仍按指令解码成 `unimp` 和 `.insn`，这是反汇编器把立即数当指令看，不会被 CPU 执行，因为上一条已经 `jr` 走了。
 
-<img src="pic/反汇编最初几条指令.png" alt="反汇编最初几条指令" width="80%" />
+<img src="images/反汇编最初几条指令.png" alt="反汇编最初几条指令" width="80%" />
 
 
 然后，我们用 `x/8gx 0x1000` 查看旁路数据表。小端机器码，对应上面已反汇编的前四条：`0x00000297` → `auipc t0,0`，`0x02828613` → `addi a2,t0,40`， `0xf1402573` → `csrr a0,mhartid`，`0x0202b583` → `ld a1,32(t0)`。左字`0x0182b283`（`ld t0,24(t0)`）和 `0x00028067`（`jr t0`），右字（地址 **0x1018**）：`0x80000000`，OpenSBI 入口，即 `jr` 的目标。
@@ -192,13 +192,13 @@ uint64_t sbi_call(uint64_t sbi_type, uint64_t arg0, uint64_t arg1, uint64_t arg2
 
 然后，我们连续 `si` 六次。PC 依次经过 `0x1004`、`0x1008`、`0x100c`、`0x1010`、`0x1014`，第 6 步后变为 `0x80000000`，与数据表中的跳转目标一致，最后 `jr t0` 进入 OpenSBI。
 
-![旁路数据表与六次 si](pic/旁路数据表+6次si.png)
+![旁路数据表与六次 si](images/旁路数据表+6次si.png)
 
 然后，我们在 OpenSBI 入口（PC `0x80000000`）执行 `x/4i 0x80200000`，发现此处已经是 `kern_entry`：`auipc`/`mv` 对应源码 `la sp, bootstacktop`，随后 `j kern_init` 对应 `tail kern_init`。
 
 最后，我们执行 `b *0x80200000` 再 `continue`，断点命中 `kern/init/entry.S` 第 7 行的 `kern_entry`（`la sp, bootstacktop`）。`p/x $pc` 得到 `0x80200000`，`x/5i $pc` 显示内核入口指令，再 `si` 三次：先执行 `la` 的前半、再走到 `tail kern_init`、最后进入 `kern_init` 的 `memset`清 BSS。
 
-<img src="pic/OpenSBI%20入口.png" alt="OpenSBI 入口" />
+<img src="images/OpenSBI%20入口.png" alt="OpenSBI 入口" />
 
 综上所述，完整路径为：`0x1000`（复位 ROM，准备参数并跳转）→ `0x80000000`（OpenSBI 固件初始化）→ `0x80200000`（内核开始执行）。加电后最初几条指令位于 `0x1000`，主要功能是准备参数，并跳转到 `0x80000000` 的 OpenSBI。
 
