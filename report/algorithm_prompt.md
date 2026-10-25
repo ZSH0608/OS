@@ -38,47 +38,83 @@
 
 ---
 
-## 2. 任务一：实现 `kern/mm/pmm.c` 的 `page_init()`
+## 2. 任务一：物理内存探测与 Page 描述符初始化
 
-`pmm_init()` 已经调用 `page_init()`，但骨架未定义它。
+[PROMPT]
+**任务**：修改 `kern/mm/pmm.c`，完成物理内存探测与 Page 描述符布局初始化能力。
+`pmm_init()` 已调用 `page_init()`，但骨架未定义；本任务补全该能力，使当前 `pmm_manager` 只接管排除 OpenSBI、内核镜像与 Page 描述符数组占用后、按页对齐的完整空闲页面。
 
-要求：
+**操作要求**：
+- 不得改动 `tools/`、评分脚本、Makefile 评分逻辑，以及 `basic_check` / `default_check` / `best_fit_check` 等检查函数。
 
-1. 先设置 `va_pa_offset = PHYSICAL_MEMORY_OFFSET`，之后才能使用 `PADDR`。
-2. 从 DTB 读取 `mem_base`、`mem_size`（`get_memory_base/get_memory_size`）。
-   若 `mem_base == 0`、`mem_size == 0`、`mem_end <= mem_base`，或 `mem_end` 超出映射/可管理上界
-   （`PHYSICAL_MEMORY_END`），用 `panic()` 终止。
-3. 计算 `npage = PPN(mem_base + mem_size)`。评分测试期望的正是这个值，不要自行截断或四舍五入。
-4. `pages` 指向内核链接符号 `end` 之后、按 `PGSIZE` 向上对齐的虚拟地址。
-   确认 `(npage - nbase)` 个 `struct Page` 的空间不越界；`npage <= nbase` 要 panic。
-5. 把 `pages` 数组覆盖的所有页描述符先全部初始化为 reserved：
-   `flags` 置 `PG_reserved`、`ref=0`、`property=0`。
-   必须先完成这一步，因为 `init_memmap` 内部会 `assert(PageReserved(p))`。
-6. 计算空闲区物理起点：
-   `freemem = ROUNDUP(PADDR(pages) + sizeof(struct Page) * (npage - nbase), PGSIZE)`
-   `PADDR` 的输入必须是内核虚拟地址，结果是字节。
-7. 若 `freemem >= mem_end` 或 `PPN(freemem) >= npage`：打印错误并 panic，绝不调用 `init_memmap()`。
-8. 否则 `init_memmap(pa2page(freemem), (mem_end - freemem) / PGSIZE)`。
-9. 用 `cprintf` 输出物理内存范围、`npage`、`pages` 的虚拟/物理地址、`freemem` 等；
-   格式符与参数类型严格匹配，避免 `-Werror`。
-10. OpenSBI（`0x80000000~0x80200000`）和内核镜像都位于 `freemem` 之前，保持 reserved，不要释放。
+**输出要求**：
 
-必须说明的地址转换（实现前后各给一张对照表）：
+[RELY]
+// 宏与常量（须与工程一致）
+- `PGSIZE` / `PGSHIFT`：页大小与页号移位
+- `PHYSICAL_MEMORY_OFFSET`：内核虚拟地址与物理地址的固定偏移
+- `PHYSICAL_MEMORY_END`：框架允许的可管理物理内存上界
+- `DRAM_BASE`（通常 `0x80000000`）：物理内存起点；OpenSBI 占用约 `0x80000000~0x80200000`
+- `PG_reserved` / `SetPageReserved` / `PageReserved`
 
-| 转换 | 手段 | 单位 |
-|---|---|---|
-| 内核虚拟 → 物理 | `PADDR(kva) = kva - va_pa_offset` | 字节 |
-| 物理 → PPN | `PPN(pa) = pa >> PGSHIFT` | 页 |
-| PPN → 物理 | `ppn << PGSHIFT` | 字节 |
-| `struct Page*` → 物理 | `page2pa(p) = (p - pages + nbase) << PGSHIFT` | 字节 |
-| 物理 → `struct Page*` | `pa2page(pa) = &pages[PPN(pa) - nbase]` | 指针 |
+// 全局状态
+- `struct Page *pages`：Page 描述符数组（内核虚拟地址）
+- `size_t npage`：可管理物理内存的页号上界（exclusive）
+- `const size_t nbase = DRAM_BASE / PGSIZE`：可管理页号下界
+- `uint64_t va_pa_offset`：虚实偏移；未正确设置前不得使用依赖它的转换
 
-验收：`make` 通过且无警告；`make grade` 输出 `[Test 1] Page Init: PASS`
-（若 Best-Fit 尚未实现，Test 2 可能 FAIL，属正常）。
+// 可用接口与符号
+- `get_memory_base()` / `get_memory_size()`：从设备树读取物理内存基址与大小
+- `init_memmap(struct Page *base, size_t n)`：把从 `base` 起连续 `n` 个完整空闲页交给当前 `pmm_manager`
+- `pa2page` / `PADDR` / `PPN` / `ROUNDUP` / `set_page_ref` / `SetPageReserved`
+- 链接符号 `end[]`：内核镜像结束位置（之后才可布局 `pages`）
+- `panic()` / `cprintf()`：异常终止与诊断输出（格式符与参数类型严格匹配，避免 `-Werror`）
 
-> 已知框架冲突：未实现 Best-Fit 时，`best_fit_pmm.c` 的检查函数引用 `free_list/nr_free`，
-> 且评分测试引用 `best_fit_pmm_manager`，整仓无法链接。应先完成任务二，或在临时副本中加最小脚手架，
-> 不要为了通过编译去改框架测试。
+[GUARANTEE]
+可根据需要添加：
+- 本文件内的 `static` 辅助函数
+- 局部变量与诊断打印
+
+不得新增或更改对外公开的物理内存管理接口；不得为通过编译去改框架测试或评分注入逻辑。
+
+[SPECIFICATION]
+## page_init
+
+**Pre-Condition**:
+- `pmm_manager` 已完成 `init()`，`init_memmap` 可安全调用。
+- 设备树解析设施可用；`get_memory_base/get_memory_size` 可被调用。
+- 启动阶段已建立内核虚实映射，但 `va_pa_offset`、`npage`、`pages` 尚未建立可依赖的物理页描述符布局。
+- 链接符号 `end` 之后存在可用于放置 Page 描述符数组的内核地址空间。
+
+**Post-Condition**:
+- 成功路径下：`va_pa_offset` 正确反映内核虚拟地址与物理地址的转换关系；`npage` 正确表示可管理物理内存的页号上界；`pages` 指向按页对齐、覆盖 `[nbase, npage)` 的描述符数组。
+- 当前 `pmm_manager` 只接管：排除 OpenSBI、内核镜像与 Page 描述符数组占用之后、按页对齐的完整空闲页面；上述已用区域对应的描述符保持 reserved。
+- 失败路径下：通过 `panic()` 终止初始化，且不得把无效或空集合交给 `init_memmap()`。
+
+  **Case 1（设备树/范围无效）**:
+  - 当物理内存基址或大小无效、上界不大于基址、或物理上界超出框架可管理上界时，终止初始化（`panic`），不设置可用空闲页，不调用 `init_memmap()`。
+
+  **Case 2（描述符布局不可建立）**:
+  - 当可管理页号上界不大于 `nbase`，或按 `end` 之后页对齐放置的 `(npage - nbase)` 个 `struct Page` 会越出可管理物理内存时，终止初始化，不调用 `init_memmap()`。
+
+  **Case 3（无完整空闲页）**:
+  - 当排除描述符数组占用并完成页对齐后，已无可管理的完整空闲页面时，打印诊断信息并 `panic`，绝不调用 `init_memmap()`。
+
+  **Case 4（正常初始化）**:
+  - 设备树范围有效且存在完整空闲页时：建立 `va_pa_offset`、`npage`、`pages`；先将描述符数组覆盖范围内的页全部标为 reserved（`ref=0`、`property=0`）；再将剩余完整空闲页注册给当前 `pmm_manager`；并用 `cprintf` 输出物理内存范围、`npage`、`pages` 的虚/实地址及空闲区信息。
+  - `npage` 必须与评分对「设备树给出的物理上界对应页号」的期望一致，不得为“图省事”自行截断或四舍五入。
+
+**Requirements**:
+- 先具备正确的虚实偏移，再进行依赖该偏移的地址转换。
+- 交给 `init_memmap` 之前，相关页描述符必须已是 reserved，以满足管理器断言。
+- OpenSBI（约 `0x80000000~0x80200000`）与内核镜像不得被释放为空闲页。
+- C99、`-nostdinc`、`-Werror`；只使用 `libs/` 与 `kern/` 已有设施。
+
+**验收**:
+- `make` 通过且无警告；`make grade` 输出 `[Test 1] Page Init: PASS`。
+- 若 Best-Fit 尚未实现，Test 2 可能 FAIL，属正常。
+
+> 已知框架冲突：未实现 Best-Fit 时，`best_fit_pmm.c` 检查函数引用 `free_list/nr_free`，且评分引用 `best_fit_pmm_manager`，整仓可能无法链接。应先完成任务二，或在临时副本中加最小脚手架；不要为了通过编译去改框架测试。
 
 ---
 

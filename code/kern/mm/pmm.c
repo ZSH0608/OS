@@ -72,7 +72,7 @@ size_t nr_free_pages(void) {
     return pmm_manager->nr_free_pages();
 }
 
-//lab2 function1 YOUR CODE
+//lab2 function1 2413157
 
 /* *
  * page_init - build the page descriptor array and free the usable memory.
@@ -85,10 +85,10 @@ size_t nr_free_pages(void) {
  * with physical addresses and page numbers.
  * */
 static void page_init(void) {
-    // 1. DRAM is direct-mapped at this offset; needed by PADDR from now on
+    // 1. 设置虚实偏移
     va_pa_offset = PHYSICAL_MEMORY_OFFSET;
 
-    // 2. physical memory range reported by the device tree
+    // 2. 从 DTB 读物理内存范围
     uint64_t mem_base = get_memory_base();
     uint64_t mem_size = get_memory_size();
     uint64_t mem_end = mem_base + mem_size;
@@ -98,33 +98,39 @@ static void page_init(void) {
               (unsigned long)mem_base, (unsigned long)mem_end);
     }
 
-    // 3. one descriptor per physical page below mem_end
-    npage = PPN(mem_end);
+    // 3. 算总页数 npage
+    npage = PPN(mem_end); // PPN() 地址右移 12 位 → 页号
     if (npage <= nbase) {
         panic("page_init: npage %lu <= nbase %lu",
               (unsigned long)npage, (unsigned long)nbase);
     }
 
-    // 4. the descriptor array starts after the kernel image, page aligned
+    // 4. 放置 pages[] 数组
     extern char end[];
+
+    //ROUNDUP(..., PGSIZE),从 end 起向上对齐到页边界，当作 pages 起点
+    //ROUNDUP(a, n) : a 向上对齐到 n 的倍数（页对齐常用)
     pages = (struct Page *)ROUNDUP((uintptr_t)end, PGSIZE);
-    uintptr_t pages_pa = PADDR((uintptr_t)pages);
+
+    //pages_pa : 这个数组在物理内存里的起始地址（PADDR）
+    uintptr_t pages_pa = PADDR((uintptr_t)pages); //PADDR(kva) 内核虚拟地址 → 物理地址
+
+    //nr_page : 页数差，pages[] 从 nbase 开始，到 npage 结束
     size_t nr_page = npage - nbase;
     if (pages_pa + nr_page * sizeof(struct Page) > mem_end) {
         panic("page_init: page array overflows physical memory");
     }
 
-    // 5. reserve every descriptor first: OpenSBI, the kernel image and the
-    //    page array itself must never be handed out by the allocator
+    // 5.全部先标成 reserved，分配器不能随便拿走
     for (size_t i = 0; i < nr_page; i ++) {
         struct Page *p = pages + i;
-        p->flags = 0;
-        p->property = 0;
-        set_page_ref(p, 0);
+        p->flags = 0;//先清标志位
+        p->property = 0;//空闲块大小先清零
+        set_page_ref(p, 0);//引用计数清零
         SetPageReserved(p);
     }
 
-    // 6. first physical page right after the page descriptor array
+    // 6. 先求 描述符数组 物理结束位置，再 ROUNDUP 到页边界 → freemem：第一个可交给分配器的物理地址
     uintptr_t freemem = ROUNDUP(pages_pa + nr_page * sizeof(struct Page), PGSIZE);
 
     // 7. there must be at least one complete page left to manage
@@ -144,8 +150,12 @@ static void page_init(void) {
             (unsigned long)freemem, (unsigned long)(mem_end - freemem),
             (unsigned long)((mem_end - freemem) / PGSIZE));
 
-    // 9. hand [freemem, mem_end) over to the current pmm manager
+    // 9. 把空闲区交给物理页管理器
     init_memmap(pa2page(freemem), (mem_end - freemem) / PGSIZE);
+    /*
+    pa2page(freemem)：空闲区第一页对应的 struct Page *
+    (mem_end - freemem) / PGSIZE：空闲页个数
+    */
 }
 
 /* pmm_init - initialize the physical memory management */
