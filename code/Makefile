@@ -1,13 +1,11 @@
-PROJ	:= lab2
+PROJ	:= lab3
 EMPTY	:=
 SPACE	:= $(EMPTY) $(EMPTY)
 SLASH	:= /
 
 V       := @
 
-#ifndef GCCPREFIX
 GCCPREFIX := riscv64-unknown-elf-
-#endif
 
 ifndef QEMU
 QEMU := qemu-system-riscv64
@@ -30,12 +28,12 @@ HOSTCFLAGS	:= -Wall -O2
 GDB		:= $(GCCPREFIX)gdb
 
 CC		:= $(GCCPREFIX)gcc
-CFLAGS  := -mcmodel=medany -std=gnu99 -Wno-unused -Werror 
+CFLAGS  := -mcmodel=medany -std=gnu99 -Wno-unused -Werror
 CFLAGS	+= -fno-builtin -Wall -O2 -nostdinc $(DEFS)
 CFLAGS	+= -fno-stack-protector -ffunction-sections -fdata-sections
 CFLAGS	+= -g
-CFLAGS2 = $(CFLAGS) -D ucore_test
 CTYPE	:= c S
+
 LD      := $(GCCPREFIX)ld
 LDFLAGS	:= -m elf64lriscv
 LDFLAGS	+= -nostdlib --gc-sections
@@ -60,13 +58,13 @@ ALLOBJS	:=
 ALLDEPS	:=
 TARGETS	:=
 
+# include some predefined function
 include tools/function.mk
 
 listf_cc = $(call listf,$(1),$(CTYPE))
 
 # for cc
 add_files_cc = $(call add_files,$(1),$(CC),$(CFLAGS) $(3),$(2),$(4))
-add_files_cc2 = $(call add_files,$(1),$(CC),$(CFLAGS2) $(3),$(2),$(4))
 create_target_cc = $(call create_target,$(1),$(2),$(3),$(CC),$(CFLAGS))
 
 # for hostcc
@@ -98,24 +96,21 @@ $(call add_files_cc,$(call listf_cc,$(LIBDIR)),libs,)
 
 KINCLUDE	+= kern/debug/ \
 			   kern/driver/ \
+			   kern/trap/ \
 			   kern/mm/ \
 			   kern/arch/
-KINCLUDE	+= kern/test
 
 KSRCDIR		+= kern/init \
 			   kern/libs \
 			   kern/debug \
 			   kern/driver \
+			   kern/trap \
 			   kern/mm
-KSRCDIR	+= kern/test
 
 KCFLAGS		+= $(addprefix -I,$(KINCLUDE))
 
-ifeq ($(MAKECMDGOALS),test)
-$(call add_files_cc2,$(call listf_cc,$(KSRCDIR)),kernel,$(KCFLAGS))
-else
 $(call add_files_cc,$(call listf_cc,$(KSRCDIR)),kernel,$(KCFLAGS))
-endif
+
 KOBJS	= $(call read_packet,kernel libs)
 
 # create kernel target
@@ -135,6 +130,8 @@ $(call create_target,kernel)
 # create ucore.img
 UCOREIMG	:= $(call totarget,ucore.img)
 
+# $(UCOREIMG): $(kernel)
+#	cd ../../riscv-pk && rm -rf build && mkdir build && cd build && ../configure --prefix=$(RISCV) --host=riscv64-unknown-elf --with-payload=../../labcodes/$(PROJ)/$(kernel)  --disable-fp-emulation && make && cp bbl ../../labcodes/$(PROJ)/$(UCOREIMG)
 
 $(UCOREIMG): $(kernel)
 	$(OBJCOPY) $(kernel) --strip-all -O binary $@
@@ -161,21 +158,26 @@ endif
 TARGETS: $(TARGETS)
 
 .DEFAULT_GOAL := TARGETS
-.PHONY: qemu spike test
+
+.PHONY: qemu spike
+# ==================== 开始改代码 ====================
+# QEMU 11+/新版 OpenSBI：用 -kernel 才能把跳转地址设到 0x80200000
+# （旧写法 -device loader,... 在本机上会出现 Next Address = 0，内核不跑）
 qemu: $(UCOREIMG) $(SWAPIMG) $(SFSIMG)
 	$(V)$(QEMU) \
 		-machine virt \
 		-nographic \
 		-bios default \
-		-device loader,file=$(UCOREIMG),addr=0x80200000
+		-kernel $(kernel)
 
 debug: $(UCOREIMG) $(SWAPIMG) $(SFSIMG)
 	$(V)$(QEMU) \
 		-machine virt \
 		-nographic \
 		-bios default \
-		-device loader,file=$(UCOREIMG),addr=0x80200000\
+		-kernel $(kernel) \
 		-s -S
+# ==================== 改代码结束 ====================
 
 gdb:
 	riscv64-unknown-elf-gdb \
@@ -183,12 +185,7 @@ gdb:
     -ex 'set arch riscv:rv64' \
     -ex 'target remote localhost:1234'
 
-test: $(UCOREIMG) $(SWAPIMG) $(SFSIMG)
-	$(V)$(QEMU) \
-		-machine virt \
-		-nographic \
-		-bios default \
-		-device loader,file=$(UCOREIMG),addr=0x80200000
+
 spike: $(UCOREIMG) $(SWAPIMG) $(SFSIMG)
 	$(V)$(SPIKE) $(UCOREIMG)
 
@@ -198,20 +195,13 @@ GRADE_GDB_IN	:= .gdb.in
 GRADE_QEMU_OUT	:= .qemu.out
 HANDIN			:= proj$(PROJ)-handin.tar.gz
 
-TOUCH_FILES		:=
+TOUCH_FILES		:= kern/trap/trap.c
 
 MAKEOPTS		:= --quiet --no-print-directory
 
-GRADE_TMP	:= /tmp/lab2_grade
-
 grade:
 	$(V)$(MAKE) $(MAKEOPTS) clean
-	$(V)$(RM) -rf $(GRADE_TMP)
-	$(V)$(MKDIR) $(GRADE_TMP)
-	$(V)tar -C . --exclude=.git --exclude=.vscode --exclude=vcs -cf - . | tar -C $(GRADE_TMP) -xf -
-	$(V)python3 tools/inject.py $(GRADE_TMP)
-	$(V)cd $(GRADE_TMP) && $(SH) tools/grade.sh
-	$(V)$(RM) -rf $(GRADE_TMP)
+	$(V)$(SH) tools/grade-rv64-patch.sh
 
 touch:
 	$(V)$(foreach f,$(TOUCH_FILES),$(TOUCH) $(f))
