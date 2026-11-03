@@ -11,6 +11,8 @@
 #include <sbi.h>
 
 #define TICK_NUM 100
+// 输出 TICK_NUM 轮统计后关机（讲义规定的关机次数）
+#define SHUTDOWN_AFTER 10
 volatile size_t num=0;
 
 static void print_ticks() {
@@ -112,24 +114,21 @@ void interrupt_handler(struct trapframe *tf) {
              *(3)当计数器加到100的时候，我们会输出一个`100ticks`表示我们触发了100次时钟中断，同时打印次数（num）加一
             * (4)判断打印次数，当打印次数为10时，调用<sbi.h>中的关机函数关机
             */
-            // (1) 设置下次时钟中断
+            // (1) 设置下次时钟中断，否则之后再也收不到时钟中断
             clock_set_next_event();
 
-            // (2) 计数器（ticks）加一
-            static int ticks = 0;
+            // (2) 全局时钟中断计数器加一（clock.h 中的 ticks，clock_init() 已清零）
             ticks++;
 
-            // (3) 当计数器加到 100 的时候，输出 "100 ticks"，并打印次数加一
-            if (ticks % 100 == 0)
-            {
-                num++; // 全局变量，记录打印次数
+            // (3) 每 TICK_NUM 次时钟中断输出一次统计，并累加已输出轮数
+            if (ticks % TICK_NUM == 0) {
+                num++;
                 print_ticks();
+            }
 
-                // (4) 判断打印次数，当打印次数为 10 时，调用关机函数
-                if (num == 10)
-                {
-                    sbi_shutdown();
-                }
+            // (4) 输出够 SHUTDOWN_AFTER 轮后关机（sbi_shutdown 不返回）
+            if (num >= SHUTDOWN_AFTER) {
+                sbi_shutdown();
             }
 
             break;
@@ -157,49 +156,81 @@ void interrupt_handler(struct trapframe *tf) {
     }
 }
 
+/*
+ * insn_len - 读取 pc 处指令的字节长度（2/4/6/8）。
+ * 返回 0 表示无法可靠判断，调用者不得修改 tf->epc。
+ */
+static int insn_len(uintptr_t pc) {
+    uint16_t insn = *(volatile uint16_t *)pc;
+    if ((insn & 0x3) != 0x3) {
+        return 2; /* 16 位压缩指令 */
+    } else if ((insn & 0x1f) != 0x1f) {
+        return 4; /* 32 位标准指令 */
+    } else if ((insn & 0x7f) == 0x3f) {
+        return 6; /* 48 位指令（本实验不会出现，仅作说明） */
+    } else if ((insn & 0x7f) == 0x7f) {
+        return 8; /* 64 位指令（本实验不会出现，仅作说明） */
+    }
+    return 0;
+}
+
 void exception_handler(struct trapframe *tf) {
+    int len;
+
     switch (tf->cause) {
-        case CAUSE_MISALIGNED_FETCH:
-            break;
-        case CAUSE_FAULT_FETCH:
-            break;
         case CAUSE_ILLEGAL_INSTRUCTION:
-            // 非法指令异常处理
-            /* LAB1 CHALLENGE3   YOUR CODE*/
-            /*(1)输出指令异常类型（ Illegal instruction）
-             *(2)输出异常指令地址
-             *(3)更新 tf->epc寄存器
-            */
-		    cprintf("Exception Type: Illegal instruction\n");
-			cprintf("Illegal instruction caught at %p\n", tf->epc);
-			tf->epc += 4;
+            // 非法指令异常处理：输出类型与地址，并按指令长度前移 epc
+            cprintf("Exception Type: Illegal instruction\n");
+            cprintf("Illegal instruction caught at %p\n", tf->epc);
+            len = insn_len(tf->epc);
+            if (len == 0) {
+                // 无法可靠判断指令长度，不盲目修改 epc
+                print_trapframe(tf);
+            } else {
+                tf->epc += len;
+            }
             break;
         case CAUSE_BREAKPOINT:
-            //断点异常处理
-            /* LAB1 CHALLLENGE3   YOUR CODE*/
-            /*(1)输出指令异常类型（ breakpoint）
-             *(2)输出异常指令地址
-             *(3)更新 tf->epc寄存器
-            */
-		    cprintf("Exception Type: breakpoint\n");
-			cprintf("ebreak caught at %p\n", tf->epc);
-			tf->epc += 2; // 经查表ebreak为16位指令
+            // 断点异常处理：ebreak 可能是 16 位压缩指令，也可能是 32 位指令
+            cprintf("Exception Type: breakpoint\n");
+            cprintf("ebreak caught at %p\n", tf->epc);
+            len = insn_len(tf->epc);
+            if (len == 0) {
+                // 无法可靠判断指令长度，不盲目修改 epc
+                print_trapframe(tf);
+            } else {
+                tf->epc += len;
+            }
+            break;
+        case CAUSE_MISALIGNED_FETCH:
+            print_trapframe(tf);
+            break;
+        case CAUSE_FAULT_FETCH:
+            print_trapframe(tf);
             break;
         case CAUSE_MISALIGNED_LOAD:
+            print_trapframe(tf);
             break;
         case CAUSE_FAULT_LOAD:
+            print_trapframe(tf);
             break;
         case CAUSE_MISALIGNED_STORE:
+            print_trapframe(tf);
             break;
         case CAUSE_FAULT_STORE:
+            print_trapframe(tf);
             break;
         case CAUSE_USER_ECALL:
+            print_trapframe(tf);
             break;
         case CAUSE_SUPERVISOR_ECALL:
+            print_trapframe(tf);
             break;
         case CAUSE_HYPERVISOR_ECALL:
+            print_trapframe(tf);
             break;
         case CAUSE_MACHINE_ECALL:
+            print_trapframe(tf);
             break;
         default:
             print_trapframe(tf);
