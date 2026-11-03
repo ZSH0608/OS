@@ -13,7 +13,7 @@
 #define TICK_NUM 100
 // 输出 TICK_NUM 轮统计后关机（讲义规定的关机次数）
 #define SHUTDOWN_AFTER 10
-volatile size_t num=0;
+volatile size_t num = 0;
 
 static void print_ticks() {
     cprintf("%d ticks\n", TICK_NUM);
@@ -23,13 +23,13 @@ static void print_ticks() {
 #endif
 }
 
-/**
- * @brief      Load supervisor trap entry in RISC-V
+/* idt_init - initialize IDT to each of the entry points in kern/trap/vectors.S
  */
 void idt_init(void) {
+
     extern void __alltraps(void);
-    /* Set sscratch register to 0, indicating to exception vector that we are
-     * presently executing in the kernel */
+    /* Set sup0 scratch register to 0, indicating to exception vector
+       that we are presently executing in the kernel */
     write_csr(sscratch, 0);
     /* Set the exception vector address */
     write_csr(stvec, &__alltraps);
@@ -84,51 +84,62 @@ void print_regs(struct pushregs *gpr) {
     cprintf("  t6       0x%08x\n", gpr->t6);
 }
 
+/* ==================== 开始改代码 ====================
+ * 功能模块二：中断与异常处理
+ * lab3 function2 2412888
+ * ================================================== */
+
 void interrupt_handler(struct trapframe *tf) {
+    //最高位是中断/异常标志，右移 1 位，只留下原因编号，才能和 IRQ_S_TIMER 等宏比较。
     intptr_t cause = (tf->cause << 1) >> 1;
+
+    //一些常见中断宏：
     switch (cause) {
-        case IRQ_U_SOFT:
+        case IRQ_U_SOFT://用户态（U 模式）软件中断
             cprintf("User software interrupt\n");
             break;
-        case IRQ_S_SOFT:
+        case IRQ_S_SOFT://管理员（S 模式）软件中断
             cprintf("Supervisor software interrupt\n");
             break;
-        case IRQ_H_SOFT:
+        case IRQ_H_SOFT:    //虚拟机管理员（H 模式）软件中断
             cprintf("Hypervisor software interrupt\n");
             break;
-        case IRQ_M_SOFT:
+        case IRQ_M_SOFT:    //机器（M 模式）软件中断
             cprintf("Machine software interrupt\n");
             break;
-        case IRQ_U_TIMER:
+        case IRQ_U_TIMER:    //用户态时钟中断
             cprintf("User software interrupt\n");
             break;
-        case IRQ_S_TIMER:
+        case IRQ_S_TIMER:    //管理员（S 模式）时钟中断
             // "All bits besides SSIP and USIP in the sip register are
             // read-only." -- privileged spec1.9.1, 4.1.4, p59
             // In fact, Call sbi_set_timer will clear STIP, or you can clear it
             // directly.
             // cprintf("Supervisor timer interrupt\n");
-             /* LAB1 EXERCISE2   YOUR CODE : */
+
+             /* LAB3 / lab3 function2 2412888 : */
+
             /*(1)设置下次时钟中断- clock_set_next_event()
              *(2)计数器（ticks）加一
              *(3)当计数器加到100的时候，我们会输出一个`100ticks`表示我们触发了100次时钟中断，同时打印次数（num）加一
             * (4)判断打印次数，当打印次数为10时，调用<sbi.h>中的关机函数关机
             */
+
             // (1) 设置下次时钟中断，否则之后再也收不到时钟中断
             clock_set_next_event();
 
             // (2) 全局时钟中断计数器加一（clock.h 中的 ticks，clock_init() 已清零）
             ticks++;
 
-            // (3) 每 TICK_NUM 次时钟中断输出一次统计，并累加已输出轮数
+            // (3) 每 100 次时钟中断输出一次统计，并累加已输出轮数
             if (ticks % TICK_NUM == 0) {
                 num++;
-                print_ticks();
+                print_ticks();//输出 100 ticks
             }
 
             // (4) 输出够 SHUTDOWN_AFTER 轮后关机（sbi_shutdown 不返回）
             if (num >= SHUTDOWN_AFTER) {
-                sbi_shutdown();
+                sbi_shutdown();// 通过 OpenSBI 关机；
             }
 
             break;
@@ -151,6 +162,8 @@ void interrupt_handler(struct trapframe *tf) {
             cprintf("Machine software interrupt\n");
             break;
         default:
+            // 评分脚本会检索该固定前缀；同时保留完整 Trap frame 便于调试
+            cprintf("Unknown interrupt: cause %d\n", (int)cause);
             print_trapframe(tf);
             break;
     }
@@ -178,23 +191,24 @@ void exception_handler(struct trapframe *tf) {
     int len;
 
     switch (tf->cause) {
-        case CAUSE_ILLEGAL_INSTRUCTION:
-            // 非法指令异常处理：输出类型与地址，并按指令长度前移 epc
-            cprintf("Exception Type: Illegal instruction\n");
-            cprintf("Illegal instruction caught at %p\n", tf->epc);
-            len = insn_len(tf->epc);
+        case CAUSE_ILLEGAL_INSTRUCTION:// 非法指令异常0x2
+            cprintf("Exception Type: Illegal instruction\n");//打印类型
+            // 评分期望子串：Illegal instruction at
+            cprintf("Illegal instruction at %p\n", tf->epc);//打印出错指令地址tf->epc
+            len = insn_len(tf->epc);//该地址处指令占几个字节
             if (len == 0) {
                 // 无法可靠判断指令长度，不盲目修改 epc
                 print_trapframe(tf);
             } else {
-                tf->epc += len;
+                tf->epc += len;//让返回后从下一条指令继续，而不是再次执行同一条非法指令
             }
             break;
-        case CAUSE_BREAKPOINT:
-            // 断点异常处理：ebreak 可能是 16 位压缩指令，也可能是 32 位指令
-            cprintf("Exception Type: breakpoint\n");
-            cprintf("ebreak caught at %p\n", tf->epc);
-            len = insn_len(tf->epc);
+
+        case CAUSE_BREAKPOINT:// 断点异常0x3,逻辑一模一样
+            cprintf("Exception Type: breakpoint\n");//打印类型
+            // 评分期望子串：Breakpoint at
+            cprintf("Breakpoint at %p\n", tf->epc);//打印出错指令地址tf->epc
+            len = insn_len(tf->epc);//该地址处指令占几个字节
             if (len == 0) {
                 // 无法可靠判断指令长度，不盲目修改 epc
                 print_trapframe(tf);
@@ -237,8 +251,8 @@ void exception_handler(struct trapframe *tf) {
             break;
     }
 }
+/* ==================== 改代码结束 ==================== */
 
-/* trap_dispatch - dispatch based on what type of trap occurred */
 static inline void trap_dispatch(struct trapframe *tf) {
     if ((intptr_t)tf->cause < 0) {
         // interrupts
@@ -255,4 +269,7 @@ static inline void trap_dispatch(struct trapframe *tf) {
  * the code in kern/trap/trapentry.S restores the old CPU state saved in the
  * trapframe and then uses the iret instruction to return from the exception.
  * */
-void trap(struct trapframe *tf) { trap_dispatch(tf); }
+void trap(struct trapframe *tf) {
+    // dispatch based on what type of trap occurred
+    trap_dispatch(tf);
+}

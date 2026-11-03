@@ -60,14 +60,16 @@
 
     /* ==================== 开始改代码 ====================
      * 功能模块一：Trap 上下文恢复（RESTORE_ALL）
-     * 依据提示词 [SPECIFICATION]/RESTORE_ALL：
+     * 依据提示词 [SPECIFICATION]::RESTORE_ALL：
      * 1) 先写回 sstatus/sepc，保证后续 sret 使用 trap() 可能更新后的最终值；
      * 2) 再恢复除 x2(sp) 外的通用寄存器；
      * 3) 最后才从 trapframe.gpr.sp（偏移 2*REGBYTES）恢复 sp——
      *    与 SAVE_ALL「把分配帧前的原始 sp 存入 sscratch 再写入该槽」严格对应，
      *    不能把 x2 当成与其它通用寄存器完全同质的槽位处理。
+     * lab3 function1 2413157
      * ================================================== */
     .macro RESTORE_ALL
+    #lab3 function1 2413157
     # 从 trapframe 取出可能被 trap() 修改过的 status（偏移 32）/epc（偏移 33）
     LOAD s1, 32*REGBYTES(sp)
     LOAD s2, 33*REGBYTES(sp)
@@ -121,17 +123,20 @@
     /* ==================== 改代码结束 ==================== */
 
     .globl __alltraps
-.align(2)
+    .align(2)
 __alltraps:
     SAVE_ALL
 
     /* ==================== 开始改代码 ====================
      * 功能模块一：Trap 入口与 C 处理函数衔接（__alltraps）
-     * 依据提示词 [SPECIFICATION]/__alltraps：
+     * 依据提示词 [SPECIFICATION]::__alltraps：
      * SAVE_ALL 之后当前 sp 即指向完整 trapframe；
      * 按 RISC-V 调用约定把该指针放入 a0，再调用 trap(struct trapframe *tf)；
-     * trap 返回后自然落入下方 __trapret，完成 RESTORE_ALL + sret。
+     * trap 返回后继续执行 __trapret，完成 RESTORE_ALL + sret。
+     * lab3 function1 2413157
      * ================================================== */
+    #lab3 function1 2413157
+    # sp should be the same as before "jal trap"
     move  a0, sp          # a0 = &trapframe，作为 trap() 的第一个参数
     jal   trap            # 转入 C 语言 Trap 分发/处理；返回后继续执行 __trapret
     /* ==================== 改代码结束 ==================== */
