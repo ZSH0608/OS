@@ -71,11 +71,6 @@
 
 ## 四、实验内容与实现
 
-<!-- 
-说明：本部分按照 exercises 文档中的练习顺序组织
-每个功能模块或者练习中可能包含多项任务，请根据实际情况调整
--->
-
 ### 功能模块一：Trap 上下文恢复与 Trap 入口功能
 
 **负责人：** 2413157-张书晗
@@ -91,13 +86,11 @@
 
 **功能说明：**
 
-- 作用：在已有 `SAVE_ALL` 把 Trap 现场压成栈上 `struct trapframe` 之后，把该帧按 RISC-V 调用约定交给 C 侧 `trap(struct trapframe *tf)`；`trap()` 返回后再由 `RESTORE_ALL` 恢复现场，最后 `sret` 回到被打断的执行流。
+- 作用：在 `SAVE_ALL` 把 Trap 现场压成栈上 `struct trapframe` 之后，把该帧按 RISC-V 调用约定交给 C 侧 `trap(struct trapframe *tf)`；`trap()` 返回后再由 `RESTORE_ALL` 恢复现场，最后 `sret` 回到被打断的执行流。
 - 主要场景：时钟中断等 S 态 Trap 反复进出内核；异常处理若改写了 `tf->epc`/`tf->status`，恢复路径必须把最终值写回 CSR。
 - 交互关系：依赖已提供的 `SAVE_ALL` 与 `struct trapframe` 布局；向上对接 `trap()` / `trap_dispatch()`；向下对接 `__trapret` 中的 `sret`。本模块不负责中断/异常的具体分类处理。
 
 #### 最终提示词
-
-以下是经过迭代优化后，最终成功实现该功能的提示词：
 
 ````markdown
 [PROMPT]
@@ -163,33 +156,28 @@ void trap(struct trapframe *tf);
 
 #### 实现迭代过程
 
-本模块的实现经历了 **3** 次迭代，过程如下：
-
 ---
 
 ##### 第一次迭代
 
-按提示词生成并写入 `RESTORE_ALL` 与 `__alltraps` 衔接代码（`move a0, sp` + `jal trap`；先恢复 `sstatus/sepc`，再恢复通用寄存器，最后 `LOAD x2`）。
+按提示词生成并写入 `RESTORE_ALL` 与 `__alltraps` 代码（`move a0, sp` + `jal trap`；先恢复 `sstatus/sepc`，再恢复通用寄存器，最后 `LOAD x2`）。
 
 **遇到的问题：**
-- 问题1：编译失败。`csrr s3, sbadaddr` 报错 `unknown CSR 'sbadaddr'`。原因：本机 GNU as 2.47 不再识别旧别名 `sbadaddr`，该 CSR 现名 `stval`（地址仍为 `0x143`）。
-- 问题2：`RESTORE_ALL`/`__alltraps` 规格本身可用，不必因编译错误改写行为描述。
+- 问题1：编译失败。`csrr s3, sbadaddr` 报错 `unknown CSR 'sbadaddr'`。原因：我本机 GNU as 2.47 不识别旧别名 `sbadaddr`，该 CSR 现名 `stval`。
 
 **问题解决策略：**
-- 针对问题1：在 `SAVE_ALL` 中将 `sbadaddr` 改为 `stval`（语义不变），并加「开始改代码 / 改代码结束」标记；同步在 [RELY] 注明二者同义。
-- 针对问题2：保持提示词对恢复顺序与 `sp` 特殊性的约束不变。
+在 `SAVE_ALL` 中将 `sbadaddr` 改为 `stval`。
 
 ---
 
 ##### 第二次迭代
 
 **遇到的问题：**
-- 编译已通过，但 `make grade` 得 0 分：串口只有 OpenSBI 横幅，内核未启动。OpenSBI 显示 `Domain0 Next Address : 0x0`。
-- 原因：QEMU 11+/新版 OpenSBI 下，旧参数 `-device loader,file=bin/ucore.img,addr=0x80200000` 无法正确设置跳转地址。
+- 编译已通过，但 `make grade` 得 0 分：串口只有 OpenSBI，内核未启动。
+- 原因：QEMU 的新版 OpenSBI 下，旧参数 `-device loader,file=bin/ucore.img,addr=0x80200000` 无法正确设置跳转地址。
 
 **问题解决策略：**
-- 将 `Makefile` 的 `qemu`/`debug` 与评分脚本 `qemuopts` 改为 `-kernel bin/kernel`，并标注改动标记。
-- 属运行环境适配，不改变 Trap 模块行为规格。
+将 `Makefile` 的 `qemu`/`debug` 与评分脚本 `qemuopts` 改为 `-kernel bin/kernel`。
 
 ---
 
@@ -197,23 +185,18 @@ void trap(struct trapframe *tf);
 
 **最终结果：**
 
-经过 3 次迭代，该模块最终：
-- ✅ 编译通过
-- ✅ `make grade` 输出 `100 ticks: OK`，`Total Score: 100/100`
-- ✅ 功能符合预期：Trap 可反复进入 `__alltraps` → `trap()` → `RESTORE_ALL` → `sret`
+`make grade` 输出 `100 ticks: OK`，`Total Score: 100/100`，功能符合预期：Trap 可反复进入 `__alltraps` → `trap()` → `RESTORE_ALL` → `sret`
 
 **关键改进点总结：**
 1. 在 [RELY] 中明确 `x2(sp)` 特殊保存方式，以及 `sbadaddr/stval` 同 CSR。
 2. 在 [SPECIFICATION] 中强调先恢复 `sstatus/sepc`，且 `sp` 必须最后恢复。
-3. 验证阶段补齐 QEMU 11+ 的 `-kernel` 启动方式，使评分真正跑到内核 Trap 路径。
 
 ---
 
-### 练习：[练习标题]
+### 功能模块二：
 
-**负责人：** [学号-姓名]
+**负责人：** 
 
-[按照练习的具体要求进行解答]
 
 ---
 
@@ -227,11 +210,6 @@ void trap(struct trapframe *tf);
 
 ## 五、测试与验证
 
-<!-- 根据该实验的具体情况，提供完整的测试运行截图，应包含：
-- 编译及运行成功的输出（make qemu），可能有多个
-- 测试通过的结果（make grade），只有一个
--->
-
 **测试说明：**
 - 编译：`make` 生成 `bin/kernel` / `bin/ucore.img` 成功。
 - 运行：内核打印 `(THU.CST) os is loading ...`、`++ setup timer interrupts`，随后连续输出 10 次 `100 ticks`。
@@ -240,8 +218,6 @@ void trap(struct trapframe *tf);
 **测试截图：**
 
 综合结果：
-
-![测试结果截图](./images/test_result.png)
 
 `make qemu` / 评分脚本串口输出（内核侧）：
 

@@ -68,15 +68,16 @@
      *    不能把 x2 当成与其它通用寄存器完全同质的槽位处理。
      * ================================================== */
     .macro RESTORE_ALL
-    # 从 trapframe 取出可能被 trap() 修改过的 status/epc
+    # 从 trapframe 取出可能被 trap() 修改过的 status（偏移 32）/epc（偏移 33）
     LOAD s1, 32*REGBYTES(sp)
     LOAD s2, 33*REGBYTES(sp)
+    # 为什么先读到通用寄存器，再写 CSR？因为 RISC-V 不能直接 内存 → CSR，必须经过通用寄存器。
 
-    # 写回 CSR：sret 依赖这两项决定返回特权级与返回 PC
+    # 把 s1 写入 CSR sstatus，把 s2 写入 CSR sepc。
     csrw sstatus, s1
     csrw sepc, s2
 
-    # 按与 SAVE_ALL 相同的槽位布局恢复通用寄存器（暂不恢复 x2）
+    # 按与 SAVE_ALL 相同的槽位布局恢复通用寄存器（先不恢复 x2）
     LOAD x1, 1*REGBYTES(sp)
     LOAD x3, 3*REGBYTES(sp)
     LOAD x4, 4*REGBYTES(sp)
@@ -109,6 +110,12 @@
     LOAD x31, 31*REGBYTES(sp)
 
     # 最后恢复 sp：释放 trapframe，回到 SAVE_ALL 之前的栈指针
+    /*
+    必须放最后：
+        sp 变回 SAVE_ALL 里 addi sp, sp, -36*REGBYTES 之前的值；
+        原先那块 Trap frame 所在栈空间不再被 sp 指向，相当于释放；
+        之后执行 sret 时，被打断程序看到的栈指针与 Trap 发生前一致。
+    */
     LOAD x2, 2*REGBYTES(sp)
     .endm
     /* ==================== 改代码结束 ==================== */
