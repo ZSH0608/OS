@@ -225,7 +225,9 @@ void trap(struct trapframe *tf);
 
 `make grade` 结果：
 
-![make grade 输出](./images/make_grade.png)
+![make grade 输出](./images/make_grade_1.png)
+
+![make grade 输出](./images/make_grade_23.png)
 
 ---
 
