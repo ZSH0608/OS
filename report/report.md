@@ -67,6 +67,19 @@
 3. 然后完成**功能C** → 为什么然后实现这个？（例如：有了第一个进程后，需要实现进程复制功能）
 4. 最后补充了**功能D** → 为什么最后实现这个？（例如：最后完善进程退出和清理机制，形成完整闭环）]
 
+「素材」：
+
+本次实验整体的完整顺序是：
+1. Trap 发生 → 进入 __alltraps
+2. SAVE_ALL：把现场存到栈上 Trap frame，SAVE_ALL 结束后，当前 sp 指向完整 Trap frame
+3. move a0, sp + jal trap：把 Trap frame 指针交给 C 处理，定义在 kern/trap/trap.c里，根据 tf->cause 判断是中断还是异常，再分给：
+  - interrupt_handler(tf)：处理中断（如时钟中断）
+  - exception_handler(tf)：处理异常（如非法指令、断点）
+4. trap() 返回到 __trapret
+5. RESTORE_ALL：把寄存器和 sstatus/sepc 写回 CPU
+6. sret：按 sstatus/sepc 切回原来的特权级与指令地址，继续执行被打断的程序
+  根据sstatus.SPP的值（此时为 0）切换回 U 模式。随后，恢复中断使能状态，将sstatus.SIE恢复为sstatus.SPIE的值，将sstatus.SPIE设置为 1,sstatus.SPP设置为 0。最后，将sepc的值赋给pc，并跳转回用户程序（sepc指向的地址）继续执行。
+
 ---
 
 ## 四、实验内容与实现
@@ -197,6 +210,25 @@ void trap(struct trapframe *tf);
 
 **负责人：** 
 
+「素材」：
+```
+trap(tf)
+  └─ trap_dispatch(tf)
+        ├─ cause 最高位为 1 → interrupt_handler(tf)
+        │     ├─ IRQ_S_TIMER：
+        │     │     clock_set_next_event()
+        │     │     ticks++
+        │     │     每 100 次：num++，打印 "100 ticks"
+        │     │     num 到 10：sbi_shutdown()
+        │     └─ 其他/未知：打印类型或 print_trapframe
+        │
+        └─ cause 最高位为 0 → exception_handler(tf)
+              ├─ 非法指令 / 断点：
+              │     打印信息
+              │     insn_len 得到长度
+              │     tf->epc += 长度
+              └─ 其他：print_trapframe(tf)
+```
 
 ---
 
@@ -237,6 +269,30 @@ void trap(struct trapframe *tf);
 
 1. 列出你们认为本实验中重要的知识点，以及与对应的 OS 原理中的知识点，并简要说明二者的含义、关系和差异
 2. 列出你们认为 OS 原理中很重要、但在本实验中没有对应上的知识点
+
+「素材」：
+本段用到的 CSR：
+
+| CSR 寄存器 | 作用 |
+|---|---|
+| sstatus | 中断的使能状态（禁止 CPU 产生中断）<br>- 里面有一个二进制位 SIE，为 0 的时候，如果当程序在 S 态运行，将禁用全部中断。<br>- 二进制位 UIE，为 0 的时候，禁止用户态程序产生中断。<br>- SPIE（Supervisor Previous Interrupt Enable）会记录进入 S 模式之前的 SIE 值：当通过 trap 进入 S 模式时，硬件会将 SPIE 设置为 SIE 的旧值，然后将 SIE 清零；在从 S 模式返回时，硬件会将 SIE 恢复为 SPIE 的值，然后将 SPIE 设置为 1。<br>- SPP（Supervisor Previous Privilege）会记录进入 S 模式之前的特权级。0 表示来自 U 模式，1 表示来自 S 模式。从 S 模式返回时会根据 SPP 的值决定返回到哪个特权级。 |
+| sie | 屏蔽特定类型的中断（按中断源分别开关，如时钟、外部中断等） |
+| sepc | Trap 发生时被打断的指令地址（被中断指令的虚拟地址）；`sret` 时 CPU 会把 pc 设成 sepc |
+| scause | 精确指出中断或异常的具体原因 |
+| stval | 与异常相关的附加信息 |
+| stvec | 中断向量表基址。中断向量表把不同种类的中断映射到对应的中断处理程序；如果只有一个中断处理程序，可以让 stvec 直接指向那个中断处理程序的地址。 |
+| sscratch | S 模式下给软件临时存放一个指针/数值的专用寄存器。<br>- 若中断前处于 S 态，sscratch 为 0<br>- 若中断前处于 U 态，sscratch 存储内核栈地址<br>之后就可以通过 sscratch 的数值判断是内核态产生的中断还是用户态产生的中断 |
+
+从 U 模式陷入 S 模式的完整流程
+1. 保存中断发生时的pc值，保存在sepc寄存器中。
+- 对于异常来说，这通常是触发异常的指令地址，
+- 对于中断来说，则是被打断的指令地址。
+2. 记录是中断还是异常以及具体原因，写入scause寄存器。
+3. 保存相关的辅助信息到stval寄存器。
+4. 保存并修改中断使能状态。将当前的中断使能状态sstatus.SIE保存到sstatus.SPIE中，并且会将sstatus.SIE清零。
+5. 保存当前的特权级信息。将当前特权级（即 U 模式，值为 0）保存到sstatus.SPP中，并将当前特权级切换到 S 模式。
+6. 将pc设置为stvec寄存器中的值，并跳转到中断处理程序的入口。
+7. 进入中断处理程序后
 
 ### AI 协作开发的经验
 
