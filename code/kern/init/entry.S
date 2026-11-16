@@ -29,31 +29,31 @@ kern_entry:
     csrw    satp, t0
     # 使用 sfence.vma 指令刷新 TLB
     sfence.vma
-    # ==================== 开始改代码 ====================
-    # 开启 Sv39 后，PC 仍是物理地址 0x80200xxx，而页表只映射
-    # VA 0xffffffffc0000000+；必须立刻跳到对应高位虚拟地址再继续执行，
-    # 否则下一条指令取指会缺页并反复落入入口（本机 QEMU 已复现）。
+    /* ==================== 开始改代码 ====================
+     * lab3 → lab4：开启 Sv39 后 PC 仍是物理地址 0x80200xxx，
+     * 而仅有高半址映射时必须立刻跳到对应虚拟地址，否则取指缺页死循环。
+     * ==================== */
     lui     t0, %hi(.Lvirt_entry)
     addi    t0, t0, %lo(.Lvirt_entry)
     jr      t0
 .Lvirt_entry:
-    # ==================== 改代码结束 ====================
+    /* ==================== 改代码结束 ==================== */
     # 从此，我们给内核搭建出了一个完美的虚拟内存空间！
-    
-    # 我们在虚拟内存空间中：随意将 sp 设置为虚拟地址！
-    # 1. 使用临时寄存器 t1 计算栈顶的精确地址
+
+    /* ==================== 开始改代码 ====================
+     * 精确设置 sp（lui+addi），避免只写高 20 位导致栈指针错误
+     * ==================== */
     lui t1, %hi(bootstacktop)
     addi t1, t1, %lo(bootstacktop)
-    # 2. 将精确地址一次性地、安全地传给 sp
     mv sp, t1
-    # 现在栈指针已经完美设置，可以安全地调用任何C函数了
-    # 然后跳转到 kern_init (不再返回)
+    /* ==================== 改代码结束 ==================== */
+
+    # 然后跳转到 kern_init
     lui t0, %hi(kern_init)
     addi t0, t0, %lo(kern_init)
     jr t0
 
 .section .data
-    # .align 2^12
     .align PGSHIFT
     .global bootstack
 bootstack:
@@ -61,21 +61,20 @@ bootstack:
     .global bootstacktop
 bootstacktop:
 
-    # a page table for Sv39
+.section .data
     .align PGSHIFT
     .global boot_page_table_sv39
-# 分配 4KiB 内存给预设的三级页表
 boot_page_table_sv39:
-    # ==================== 开始改代码 ====================
-    # Sv39 一级页表（每项映射 1GiB）：
-    # - VPN2=2：VA 0x80000000 恒等映射到 PA 0x80000000
-    #   这样 csrw satp 之后、跳到高半址之前，仍可用物理 PC 取指；
-    # - VPN2=511：VA 0xffffffffc0000000 映射到 PA 0x80000000（内核高半址）
+    /* ==================== 开始改代码 ====================
+     * lab3 → lab4：Sv39 一级页表
+     * - VPN2=2：VA 0x80000000 恒等映射，保证 satp 开启后到跳转前仍可取指
+     * - VPN2=511：VA 0xffffffffc0000000 映射到 PA 0x80000000（内核高半址）
+     * ==================== */
     .zero 8 * 2
     .quad (0x80000 << 10) | 0xcf # VRWXAD, identity 0x80000000
     .zero 8 * (511 - 3)
     .quad (0x80000 << 10) | 0xcf # VRWXAD, high half
-    # ==================== 改代码结束 ====================
+    /* ==================== 改代码结束 ==================== */
 
     .global boot_hartid
 boot_hartid:

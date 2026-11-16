@@ -1,0 +1,45 @@
+(THU.CST) os is loading ...
+
+
+
+Special kernel symbols:
+
+  entry  0xc020005a (virtual)
+
+  etext  0xc020360a (virtual)
+
+  edata  0xc0208028 (virtual)
+
+  end    0xc02084a8 (virtual)
+
+Kernel executable memory footprint: 34KB
+
+memory management: best_fit_pmm_manager
+
+Physical Memory: base=0x0000000080000000, size=0x0000000008000000, end=0x0000000088000000
+
+npage: 557056
+
+pages: va=0xffffffffc0209000, pa=0x0000000080209000
+
+free memory: pa=0x0000000080409000, size=0x0000000007bf7000, 31735 pages
+
+check_alloc_page() succeeded!
+
+check_pgdir() succeeded!
+
+check_boot_pgdir() succeeded!
+
+use SLOB allocator
+
+kmalloc_init() succeeded!
+
+check_vma_struct() succeeded!
+
+check_vmm() succeeded.
+
+[lab4] proc_init placeholder (module2 pending)
+
+++ setup timer interrupts
+
+[lab4] cpu_idle placeholder — module1 pmm checks already done.

@@ -67,24 +67,16 @@
 3. 然后完成**功能C** → 为什么然后实现这个？（例如：有了第一个进程后，需要实现进程复制功能）
 4. 最后补充了**功能D** → 为什么最后实现这个？（例如：最后完善进程退出和清理机制，形成完整闭环）]
 
-「素材」：
-
-本次实验整体的完整顺序是：
-1. Trap 发生 → 进入 __alltraps
-2. SAVE_ALL：把现场存到栈上 Trap frame，SAVE_ALL 结束后，当前 sp 指向完整 Trap frame
-3. move a0, sp + jal trap：把 Trap frame 指针交给 C 处理，定义在 kern/trap/trap.c里，根据 tf->cause 判断是中断还是异常，再分给：
-  - interrupt_handler(tf)：处理中断（如时钟中断）
-  - exception_handler(tf)：处理异常（如非法指令、断点）
-4. trap() 返回到 __trapret
-5. RESTORE_ALL：把寄存器和 sstatus/sepc 写回 CPU
-6. sret：按 sstatus/sepc 切回原来的特权级与指令地址，继续执行被打断的程序
-  根据sstatus.SPP的值（此时为 0）切换回 U 模式。随后，恢复中断使能状态，将sstatus.SIE恢复为sstatus.SPIE的值，将sstatus.SPIE设置为 1,sstatus.SPP设置为 0。最后，将sepc的值赋给pc，并跳转回用户程序（sepc指向的地址）继续执行。
-
 ---
 
 ## 四、实验内容与实现
 
-### 功能模块一：Trap 上下文恢复与 Trap 入口功能
+<!-- 
+说明：本部分按照 exercises 文档中的练习顺序组织
+每个功能模块或者练习中可能包含多项任务，请根据实际情况调整
+-->
+
+### 功能模块一：虚拟内存页操作功能
 
 **负责人：** 2413157-张书晗
 
@@ -92,174 +84,131 @@
 
 **需要实现/修改的函数：**
 
-```asm
-.macro RESTORE_ALL          /* kern/trap/trapentry.S */
-.globl __alltraps           /* 补全 SAVE_ALL 之后到 trap() 的衔接 */
+```c
+int page_insert(pde_t *pgdir, struct Page *page, uintptr_t la, uint32_t perm); // kern/mm/pmm.c
+void page_remove(pde_t *pgdir, uintptr_t la);                                 // kern/mm/pmm.c
 ```
 
 **功能说明：**
 
-- 作用：在 `SAVE_ALL` 把 Trap 现场压成栈上 `struct trapframe` 之后，把该帧按 RISC-V 调用约定交给 C 侧 `trap(struct trapframe *tf)`；`trap()` 返回后再由 `RESTORE_ALL` 恢复现场，最后 `sret` 回到被打断的执行流。
-- 主要场景：时钟中断等 S 态 Trap 反复进出内核；异常处理若改写了 `tf->epc`/`tf->status`，恢复路径必须把最终值写回 CSR。
-- 交互关系：依赖已提供的 `SAVE_ALL` 与 `struct trapframe` 布局；向上对接 `trap()` / `trap_dispatch()`；向下对接 `__trapret` 中的 `sret`。本模块不负责中断/异常的具体分类处理。
+- 本模块在已有多级页表框架上完成最基本的映射维护：把物理页挂到指定线性地址，以及把已有映射安全撤销。
+- `page_insert` 建立或更新映射；`page_remove` 删除映射。二者共同决定线性地址最终对应哪一页物理内存，并保持「页表项内容、物理页引用计数、TLB 状态」三者同步。
+- 主要场景：首次建映射、同页更新权限、替换为其他物理页、`get_pte(..., create=1)` 分配中间页表失败返回 `-E_NO_MEM`、以及无映射时 `page_remove` 幂等返回。
+- 与其他模块关系：依赖已实现的 `get_pte` / `pte_create` / `tlb_invalidate` 与物理页分配器；为后续页表测试、内核映射检查和线程地址空间逻辑提供基础。本实验以 `/Volumes/T7/lab4_new` 框架为底（而非直接在 lab3 分支上改），并把 lab2/lab3 代码填回标注位置。
 
 #### 最终提示词
 
+以下是经过迭代优化后，最终成功实现该功能的提示词：
+
 ````markdown
 [PROMPT]
-**任务**：修改 `kern/trap/trapentry.S`，完成「Trap 上下文恢复与 Trap 入口」模块。
-本模块负责在已有 `SAVE_ALL` 把 Trap 现场保存到当前内核栈上的 `struct trapframe` 之后，建立汇编入口与 C 语言 `trap(struct trapframe *tf)` 的正确调用关系，并实现与 `SAVE_ALL` 对应的 `RESTORE_ALL`，使系统形成完整闭环：
-Trap 进入 → 上下文保存 → C 语言处理 → 上下文恢复 → `sret` 返回原执行流。
+**任务**：修改 `kern/mm/pmm.c`（如声明需同步则同时修改 `kern/mm/pmm.h`），完成「虚拟内存页操作」功能模块。
+本模块在已有多级页表框架上提供最基本的映射维护能力：把指定物理页挂到给定线性地址上，以及把已有映射安全撤销。
+`page_insert` 负责建立或更新映射，`page_remove` 负责删除映射；二者共同决定某一线性地址最终对应哪一页物理内存，并保证物理页引用计数、页表项内容与 TLB 状态三者一致。
 
 **操作要求**：
-- 必须在项目中修改实际文件 `kern/trap/trapentry.S`，而不是仅展示代码片段。
-- 保留文件中现有代码；只补全 `RESTORE_ALL` 宏，以及 `__alltraps` 中 `SAVE_ALL` 之后、`__trapret` 之前需要补全的位置。
-- 不得修改已提供的 `SAVE_ALL` 宏语义（仅允许工具链兼容的 CSR 别名替换）。
-- 不得修改 `struct trapframe` / `struct pushregs` 的布局与定义，不得修改 `void trap(struct trapframe *tf)` 的函数签名。
-- 不得改动 `__trapret` 中已有的 `RESTORE_ALL` 调用与随后的 `sret` 控制流结构。
-- 不得引入与本模块无关的功能（时钟处理、异常分类等属于其他模块）。
+- 必须在项目中修改实际文件，而不是仅展示代码片段。
+- 保留文件中现有代码；只在 `page_insert` / `page_remove`（及确有必要时的模块内辅助函数）的标记或空实现位置补全。
+- 不得修改 `get_pte()` 的既有语义与签名（可调用，不可改写其行为约定）。
+- 不得改动物理内存分配器接口的对外契约。
+- 不得引入与本模块无关的功能。
 
 **输出要求**：
 - 直接进行文件操作。
-- 以工程真实代码及下列 [RELY]、[GUARANTEE]、[SPECIFICATION] 为准。
+- 以工程真实代码及下列 `[RELY]`、`[GUARANTEE]`、`[SPECIFICATION]` 为准。
 
 [RELY]
-#if __riscv_xlen == 64
-# define STORE    sd
-# define LOAD     ld
-# define LOG_REGBYTES 3
-#else
-# define STORE    sw
-# define LOAD     lw
-# define LOG_REGBYTES 2
-#endif
-#define REGBYTES (1 << LOG_REGBYTES)
-
-struct trapframe {
-    struct pushregs gpr;   // 0..31 * REGBYTES
-    uintptr_t status;      // 32
-    uintptr_t epc;         // 33
-    uintptr_t badvaddr;    // 34，对应 sbadaddr/stval（同 CSR 0x143）
-    uintptr_t cause;       // 35
-};
-
-// SAVE_ALL：原始 sp 进 sscratch → 下移 36*REGBYTES → 存 x0/x1/x3..x31 →
-// 把 sscratch 中的原始 sp 写入偏移 2 → 存 sstatus/sepc/stval/scause。
-// 结束后当前 sp 即 trapframe 指针。
-
-void trap(struct trapframe *tf);
+#define PTE_V 0x001
+#define PTE_R 0x002
+#define PTE_W 0x004
+#define PTE_U 0x010
+#define E_NO_MEM 4
+typedef uintptr_t pte_t;
+typedef uintptr_t pde_t;
+struct Page { int ref; uint64_t flags; unsigned int property; list_entry_t page_link; };
+pte_t *get_pte(pde_t *pgdir, uintptr_t la, bool create);
+pte_t pte_create(uintptr_t ppn, uint32_t perm);
+struct Page *pte2page(pte_t pte);
+page_ref / set_page_ref / page_ref_inc / page_ref_dec
+alloc_page / free_page
+tlb_invalidate / flush_tlb
 
 [GUARANTEE]
-必须补全：RESTORE_ALL 宏；__alltraps 中 SAVE_ALL 之后对 trap() 的调用衔接。
-禁止修改 trap() 签名、trapframe 布局、__trapret 的 RESTORE_ALL+sret 顺序。
+必须实现：
+```c
+int page_insert(pde_t *pgdir, struct Page *page, uintptr_t la, uint32_t perm);
+void page_remove(pde_t *pgdir, uintptr_t la);
+```
+允许添加 static 辅助函数（如 page_remove_pte）。
 
 [SPECIFICATION]
-## RESTORE_ALL
-**Pre-Condition**: sp 指向完整 trapframe（可能已被 trap() 更新）。
-**Post-Condition**: 通用寄存器与 sstatus/sepc 恢复为帧中最终值；x2(sp) 从 gpr.sp 恢复且必须最后恢复；可安全 sret。
-**Case 1**: 与 SAVE_ALL 互逆恢复；先 CSR，再通用寄存器，最后 sp。
-**Requirements**: 不与 SAVE_ALL 布局冲突；不规定唯一指令序列。
+## page_insert
+**Pre-Condition**: pgdir/page/la/perm 合法；可用 get_pte(...,1) 定位或创建末级 PTE。
+**Post-Condition**: 成功则 la 映射到 page 且权限为 perm，引用计数与 TLB 同步；失败返回 -E_NO_MEM 且不留半完成映射。
+**Case 1**: 无旧映射 → 新建映射，ref++，TLB 失效，返回 0。
+**Case 2**: 已映射到同一 page → 更新权限，引用计数自洽，TLB 失效，返回 0。
+**Case 3**: 已映射到其他 page → 先撤销旧映射再建立新映射，引用计数与 check_pgdir 可观察行为一致。
+**Case 4**: 无法获得末级 PTE → 返回 -E_NO_MEM。
+**Requirements**: 页表项、引用计数、TLB 三者同步；只描述行为不规定唯一实现步骤。
 
-## __alltraps
-**Pre-Condition**: SAVE_ALL 后 sp 指向 trapframe。
-**Post-Condition**: 以 a0 传递 trapframe 指针并调用 trap()；返回后进入 __trapret。
-**Case 1**: move a0,sp；jal trap。
-**Requirements**: 遵守 RISC-V 调用约定；不破坏后续恢复所需信息。
+## page_remove
+**Pre-Condition**: 不假定 la 一定有有效映射。
+**Post-Condition**: 有映射则删除并同步 ref/TLB；无映射则安静返回（幂等）。
 ````
 
 #### 实现迭代过程
+
+本模块的实现经历了 2 次关键迭代，过程如下：
 
 ---
 
 ##### 第一次迭代
 
-按提示词生成并写入 `RESTORE_ALL` 与 `__alltraps` 代码（`move a0, sp` + `jal trap`；先恢复 `sstatus/sepc`，再恢复通用寄存器，最后 `LOAD x2`）。
+按上述提示词生成 `page_insert` / `page_remove`（含 static `page_remove_pte`），并迁入 lab2 的 `page_init`、Best-Fit，以及 lab3 的 trap 入口/处理代码。
 
 **遇到的问题：**
-- 问题1：编译失败。`csrr s3, sbadaddr` 报错 `unknown CSR 'sbadaddr'`。原因：我本机 GNU as 2.47 不识别旧别名 `sbadaddr`，该 CSR 现名 `stval`。
+- 问题1：本机 QEMU 使用框架默认 `-device loader` 时 OpenSBI Next Address 为 0，内核进不去；改为 `-kernel` 后仍因 lab4 原始 `entry.S` 缺少 0x80000000 恒等映射与虚址跳转而在开启 Sv39 后取指死循环。
+- 问题2：`check_pgdir()` 已通过，但 `check_boot_pgdir()` 在 `strcpy((void*)0x100, ...)` 处整机重启。根因是框架 `get_pte` 给非叶页表项设置了 `PTE_U`，违反 RISC-V「非叶项 R/W/X/U 必须为 0」的约定，硬件页表行走失败。
 
 **问题解决策略：**
-在 `SAVE_ALL` 中将 `sbadaddr` 改为 `stval`。
+- 针对问题1：迁入 lab3 已验证的 `entry.S` 恒等映射 + `.Lvirt_entry` 跳转，并修正 Makefile/`grade.sh` 的 QEMU 启动参数（环境/启动问题，不改提示词主体）。
+- 针对问题2：将非叶项改为 `pte_create(ppn, 0)`；同步把 `check_pgdir` 中对 `boot_pgdir_va[0] & PTE_U` 的断言改为检查 `PTE_V`。这属于保留真实硬件语义的修正，与提示词中「TLB/页表一致性」要求一致。
 
 ---
 
 ##### 第二次迭代
 
-**遇到的问题：**
-- 编译已通过，但 `make grade` 得 0 分：串口只有 OpenSBI，内核未启动。
-- 原因：QEMU 的新版 OpenSBI 下，旧参数 `-device loader,file=bin/ucore.img,addr=0x80200000` 无法正确设置跳转地址。
-
-**问题解决策略：**
-将 `Makefile` 的 `qemu`/`debug` 与评分脚本 `qemuopts` 改为 `-kernel bin/kernel`。
-
----
-
-##### 第三次迭代
-
 **最终结果：**
 
-`make grade` 输出 `100 ticks: OK`，`Total Score: 100/100`，功能符合预期：Trap 可反复进入 `__alltraps` → `trap()` → `RESTORE_ALL` → `sret`
+经过 2 次迭代，该模块最终：
+- ✅ 编译通过（`make`）
+- ✅ `check_alloc_page` / `check_pgdir` / `check_boot_pgdir` 全部 succeeded
+- ✅ `kmalloc_init` / `check_vmm` 通过；随后进入模块二占位的 `proc_init`（模块二/三尚未用提示词实现）
 
 **关键改进点总结：**
-1. 在 [RELY] 中明确 `x2(sp)` 特殊保存方式，以及 `sbadaddr/stval` 同 CSR。
-2. 在 [SPECIFICATION] 中强调先恢复 `sstatus/sepc`，且 `sp` 必须最后恢复。
-
----
-
-### 功能模块二：
-
-**负责人：** 
-
-「素材」：
-```
-trap(tf)
-  └─ trap_dispatch(tf)
-        ├─ cause 最高位为 1 → interrupt_handler(tf)
-        │     ├─ IRQ_S_TIMER：
-        │     │     clock_set_next_event()
-        │     │     ticks++
-        │     │     每 100 次：num++，打印 "100 ticks"
-        │     │     num 到 10：sbi_shutdown()
-        │     └─ 其他/未知：打印类型或 print_trapframe
-        │
-        └─ cause 最高位为 0 → exception_handler(tf)
-              ├─ 非法指令 / 断点：
-              │     打印信息
-              │     insn_len 得到长度
-              │     tf->epc += 长度
-              └─ 其他：print_trapframe(tf)
-```
-
----
-
-### Challenge：[Challenge标题]
-
-**负责人：** [学号-姓名]
-
-[按照Challenge的具体要求进行解答]
+1. 在实现中用 static `page_remove_pte` 统一「撤映射 + 降引用 + TLB 失效」，对应提示词 Case 3 与 `page_remove` 幂等要求。
+2. 明确非叶 PTE 不得带 `PTE_U`，否则 `check_boot_pgdir` 的真实 MMU 访问会失败——这是提示词「保留真实语义」在 RISC-V 上的具体落地。
+3. 验证阶段以框架自带 `check_pgdir`/`check_boot_pgdir` 为准；完整 `make grade` 还需后续完成模块二/三。
 
 ---
 
 ## 五、测试与验证
 
-**测试说明：**
-- 编译：`make` 生成 `bin/kernel` / `bin/ucore.img` 成功。
-- 运行：内核打印 `(THU.CST) os is loading ...`、`++ setup timer interrupts`，随后连续输出 10 次 `100 ticks`。
-- 评分：`make grade` → `-100 ticks: OK`，`Total Score: 100/100`。
+本阶段验证范围：功能模块一（虚拟内存页操作）。在填好 lab2/lab3 依赖并实现 `page_insert`/`page_remove` 后执行 `make && make qemu`。
+
+关键输出包括：
+- `check_alloc_page() succeeded!`
+- `check_pgdir() succeeded!`
+- `check_boot_pgdir() succeeded!`
+- `kmalloc_init() succeeded!` / `check_vmm() succeeded.`
+
+说明：模块二/三仍为占位实现，故尚未跑通完整 `make grade` 的 Process Create / Schedule 项；上图/日志对应模块一相关启动检查。
 
 **测试截图：**
 
-综合结果：
+![测试结果截图](./images/test_result.png)
 
-`make qemu` / 评分脚本串口输出（内核侧）：
-
-![make qemu 输出](./images/make_qemu.png)
-
-`make grade` 结果：
-
-![make grade 输出](./images/make_grade_1.png)
-
-![make grade 输出](./images/make_grade_23.png)
+完整文本日志见：`./images/qemu_module1.log`
 
 ---
 
@@ -269,30 +218,6 @@ trap(tf)
 
 1. 列出你们认为本实验中重要的知识点，以及与对应的 OS 原理中的知识点，并简要说明二者的含义、关系和差异
 2. 列出你们认为 OS 原理中很重要、但在本实验中没有对应上的知识点
-
-「素材」：
-本段用到的 CSR：
-
-| CSR 寄存器 | 作用 |
-|---|---|
-| sstatus | 中断的使能状态（禁止 CPU 产生中断）<br>- 里面有一个二进制位 SIE，为 0 的时候，如果当程序在 S 态运行，将禁用全部中断。<br>- 二进制位 UIE，为 0 的时候，禁止用户态程序产生中断。<br>- SPIE（Supervisor Previous Interrupt Enable）会记录进入 S 模式之前的 SIE 值：当通过 trap 进入 S 模式时，硬件会将 SPIE 设置为 SIE 的旧值，然后将 SIE 清零；在从 S 模式返回时，硬件会将 SIE 恢复为 SPIE 的值，然后将 SPIE 设置为 1。<br>- SPP（Supervisor Previous Privilege）会记录进入 S 模式之前的特权级。0 表示来自 U 模式，1 表示来自 S 模式。从 S 模式返回时会根据 SPP 的值决定返回到哪个特权级。 |
-| sie | 屏蔽特定类型的中断（按中断源分别开关，如时钟、外部中断等） |
-| sepc | Trap 发生时被打断的指令地址（被中断指令的虚拟地址）；`sret` 时 CPU 会把 pc 设成 sepc |
-| scause | 精确指出中断或异常的具体原因 |
-| stval | 与异常相关的附加信息 |
-| stvec | 中断向量表基址。中断向量表把不同种类的中断映射到对应的中断处理程序；如果只有一个中断处理程序，可以让 stvec 直接指向那个中断处理程序的地址。 |
-| sscratch | S 模式下给软件临时存放一个指针/数值的专用寄存器。<br>- 若中断前处于 S 态，sscratch 为 0<br>- 若中断前处于 U 态，sscratch 存储内核栈地址<br>之后就可以通过 sscratch 的数值判断是内核态产生的中断还是用户态产生的中断 |
-
-从 U 模式陷入 S 模式的完整流程
-1. 保存中断发生时的pc值，保存在sepc寄存器中。
-- 对于异常来说，这通常是触发异常的指令地址，
-- 对于中断来说，则是被打断的指令地址。
-2. 记录是中断还是异常以及具体原因，写入scause寄存器。
-3. 保存相关的辅助信息到stval寄存器。
-4. 保存并修改中断使能状态。将当前的中断使能状态sstatus.SIE保存到sstatus.SPIE中，并且会将sstatus.SIE清零。
-5. 保存当前的特权级信息。将当前特权级（即 U 模式，值为 0）保存到sstatus.SPP中，并将当前特权级切换到 S 模式。
-6. 将pc设置为stvec寄存器中的值，并跳转到中断处理程序的入口。
-7. 进入中断处理程序后
 
 ### AI 协作开发的经验
 

@@ -12,8 +12,12 @@ SECTIONS
     . = BASE_ADDRESS;
 
     .text : {
+        /* ==================== 开始改代码 ====================
+         * 保证 kern_entry 落在镜像最前，OpenSBI 跳到 0x80200000 即入口
+         * ==================== */
         *(.text.kern_entry)
         *(.text .stub .text.* .gnu.linkonce.t.*)
+        /* ==================== 改代码结束 ==================== */
     }
 
     PROVIDE(etext = .); /* Define the 'etext' symbol to this value */
