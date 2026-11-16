@@ -218,50 +218,182 @@ init_main(void *arg)
     return 0;
 }
 
-//LAB4 function2 YOUR CODE
+//LAB4 function2 2411514
 /* ==================== 开始改代码 ====================
- * 占位：模块二（进程创建）尚未用提示词实现。
- * 此处仅提供最小定义，使内核能够链接并跑完 pmm_init / check_pgdir，
- * 从而验证功能模块一；完整实现将在后续模块二提示词中替换本段。
+ * 功能模块二：进程创建及初始化
+ * 依据提示词：alloc_proc 得到干净 PCB；proc_init 包装 idleproc 并创建
+ * initproc；kernel_thread 构造临时中断帧；do_fork 完成 7 步创建；
+ * copy_thread 布置 trapframe 与首次运行 context；copy_mm 当前为占位。
  * ==================== */
+
+/* 前向声明：do_fork 需在定义之前调用这两个 static 函数 */
+static void copy_thread(struct proc_struct *proc, uintptr_t esp, struct trapframe *tf);
+static int copy_mm(uint32_t clone_flags, struct proc_struct *proc);
+
+// alloc_proc - alloc a proc_struct and init all fields of proc_struct
 static struct proc_struct *
 alloc_proc(void)
 {
-    panic("alloc_proc: module2 not implemented yet.\n");
+    struct proc_struct *proc = kmalloc(sizeof(struct proc_struct));
+    if (proc != NULL)
+    {
+        proc->state = PROC_UNINIT;      // 已创建但尚未进入调度
+        proc->pid = -1;                 // 身份尚未分配
+        proc->runs = 0;                 // 尚未运行过
+        proc->kstack = 0;               // 内核栈待分配
+        proc->need_resched = 0;         // 暂不需要重调度
+        proc->parent = NULL;            // 父进程待挂接
+        proc->mm = NULL;                // 内核线程不持有独立 mm
+        memset(&(proc->context), 0, sizeof(struct context)); // 上下文清零
+        proc->tf = NULL;                // 中断帧待布置
+        proc->pgdir = boot_pgdir_pa;    // 共享内核页目录（物理地址）
+        proc->flags = 0;                // 标志位清零
+        memset(proc->name, 0, PROC_NAME_LEN + 1); // 进程名清零
+    }
+    return proc;
 }
 
+// proc_init - set up the first kernel thread idleproc and initproc
 void
 proc_init(void)
 {
-    /* 模块一验证阶段：跳过进程系统初始化 */
-    cprintf("[lab4] proc_init placeholder (module2 pending)\n");
+    int i;
+    list_init(&proc_list);
+    for (i = 0; i < HASH_LIST_SIZE; i ++)
+    {
+        list_init(hash_list + i);
+    }
+
+    // 创建第 0 个内核线程 idleproc：直接复用当前执行现场
+    if ((idleproc = alloc_proc()) == NULL)
+    {
+        panic("cannot alloc idleproc.\n");
+    }
+    idleproc->pid = 0;
+    idleproc->state = PROC_RUNNABLE;
+    idleproc->kstack = (uintptr_t)bootstack;   // 复用启动阶段准备好的 bootstack
+    idleproc->need_resched = 1;                // 尽快让出 CPU 给 initproc
+    set_proc_name(idleproc, "idle");
+    nr_process ++;
+
+    current = idleproc;
+
+    // 创建第 1 个内核线程 initproc
+    int pid = kernel_thread(init_main, "Hello world!!", 0);
+    if (pid <= 0)
+    {
+        panic("create init_main failed.\n");
+    }
+    initproc = find_proc(pid);
+    set_proc_name(initproc, "init");
+
+    assert(idleproc != NULL && idleproc->pid == 0);
+    assert(initproc != NULL && initproc->pid == 1);
 }
 
+// kernel_thread - create a kernel thread using "fn" function
 int
 kernel_thread(int (*fn)(void *), void *arg, uint32_t clone_flags)
 {
-    (void)fn; (void)arg; (void)clone_flags;
-    panic("kernel_thread: module2 not implemented yet.\n");
+    struct trapframe tf;
+    memset(&tf, 0, sizeof(struct trapframe));
+    // s0 放函数入口、s1 放参数，供 kernel_thread_entry 使用
+    tf.gpr.s0 = (uintptr_t)fn;
+    tf.gpr.s1 = (uintptr_t)arg;
+    // 置 SPP/SPIE、清 SIE：sret 后回到 S 态并恢复中断使能状态
+    tf.status = (read_csr(sstatus) | SSTATUS_SPP | SSTATUS_SPIE) & ~SSTATUS_SIE;
+    tf.epc = (uintptr_t)kernel_thread_entry;
+    return do_fork(clone_flags | CLONE_VM, 0, &tf);
 }
 
+// do_fork - parent process for a new child process
+//    1. call alloc_proc to allocate a proc_struct
+//    2. call setup_kstack to allocate a kernel stack for child process
+//    3. call copy_mm to dup OR share mm according clone_flag
+//    4. call copy_thread to setup tf & context in proc_struct
+//    5. insert proc_struct into hash_list && proc_list
+//    6. call wakeup_proc to make the new child process RUNNABLE
+//    7. set ret vaule using child proc's pid
 int
 do_fork(uint32_t clone_flags, uintptr_t stack, struct trapframe *tf)
 {
-    (void)clone_flags; (void)stack; (void)tf;
-    panic("do_fork: module2 not implemented yet.\n");
+    int ret = -E_NO_FREE_PROC;
+    struct proc_struct *proc;
+    if (nr_process >= MAX_PROCESS)
+    {
+        goto fork_out;
+    }
+    ret = -E_NO_MEM;
+    // 1. 分配并初始化进程控制块
+    if ((proc = alloc_proc()) == NULL)
+    {
+        goto fork_out;
+    }
+    proc->parent = current;
+    // 2. 分配并初始化内核栈
+    if (setup_kstack(proc) != 0)
+    {
+        goto bad_fork_cleanup_proc;
+    }
+    // 3. 复制/共享地址空间（本实验为占位）
+    if (copy_mm(clone_flags, proc) != 0)
+    {
+        goto bad_fork_cleanup_kstack;
+    }
+    // 4. 布置中断帧与首次运行上下文
+    copy_thread(proc, stack, tf);
+    // 5. 挂入 proc_list 与 hash_list（关中断保证原子性）
+    {
+        bool intr_flag;
+        local_intr_save(intr_flag);
+        {
+            proc->pid = get_pid();
+            hash_proc(proc);
+            list_add(&proc_list, &(proc->list_link));
+            nr_process ++;
+        }
+        local_intr_restore(intr_flag);
+    }
+    // 6. 置为就绪态
+    wakeup_proc(proc);
+    // 7. 返回子进程 pid
+    ret = proc->pid;
+
+fork_out:
+    return ret;
+
+bad_fork_cleanup_kstack:
+    put_kstack(proc);
+bad_fork_cleanup_proc:
+    kfree(proc);
+    goto fork_out;
 }
 
+// copy_thread - setup the trapframe on the process's kernel stack top and
+//             - setup the kernel entry point and stack of process
 static void
 copy_thread(struct proc_struct *proc, uintptr_t esp, struct trapframe *tf)
 {
-    (void)proc; (void)esp; (void)tf;
-    panic("copy_thread: module2 not implemented yet.\n");
+    // 把中断帧放到新进程内核栈顶端
+    proc->tf = (struct trapframe *)(proc->kstack + KSTACKSIZE) - 1;
+    *(proc->tf) = *tf;
+
+    // a0=0 表示该执行体是"子进程"（fork 的返回值为 0）
+    proc->tf->gpr.a0 = 0;
+    // 若调用方未指定栈，则使用内核栈顶（即中断帧自身位置）
+    proc->tf->gpr.sp = (esp == 0) ? (uintptr_t)proc->tf : esp;
+
+    // 首次运行链路：switch_to 恢复 context 后回到 forkret -> forkrets -> __trapret
+    proc->context.ra = (uintptr_t)forkret;
+    proc->context.sp = (uintptr_t)(proc->tf);
 }
 
+// copy_mm - process "proc" duplicate OR share process "current" mm according clone_flags
 static int
 copy_mm(uint32_t clone_flags, struct proc_struct *proc)
 {
-    (void)clone_flags; (void)proc;
+    assert(current->mm == NULL);
+    /* 本实验创建的是内核线程，current->mm 为 NULL，无需复制地址空间 */
     return 0;
 }
 /* ==================== 改代码结束 ==================== */
