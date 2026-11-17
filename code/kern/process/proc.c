@@ -400,22 +400,49 @@ copy_mm(uint32_t clone_flags, struct proc_struct *proc)
 
 //LAB4 function3 YOUR CODE
 /* ==================== 开始改代码 ====================
- * 占位：模块三（进程调度）尚未用提示词实现。
- * 仅保证链接与 pmm 验证阶段不因缺符号失败。
+ * 功能模块三：进程切换与空闲循环
+ * proc_run 在关中断临界区内更新 current、按需切换 Sv39 页表并调用
+ * switch_to；cpu_idle 持续检查 need_resched，有需求时发起调度。
  * ==================== */
 void
 proc_run(struct proc_struct *proc)
 {
-    (void)proc;
-    panic("proc_run: module3 not implemented yet.\n");
+    if (proc == current)
+    {
+        return;
+    }
+
+    bool intr_flag;
+    struct proc_struct *prev = current;
+
+    local_intr_save(intr_flag);
+    {
+        /* 先更新 current：新线程首次运行经 forkret 时需读取 current->tf */
+        current = proc;
+
+        /* 页表不同才切换；satp.MODE 位于 bit[63:60]，必须使用 Sv39 格式。
+         * libs/riscv.h 的 lsatp() 是 Sv32 语义，不能用于本实验。 */
+        if (proc->pgdir != prev->pgdir)
+        {
+            write_csr(satp, ((uint64_t)SATP_MODE_SV39 << 60) |
+                                (proc->pgdir >> RISCV_PGSHIFT));
+            flush_tlb();
+        }
+
+        switch_to(&(prev->context), &(proc->context));
+    }
+    local_intr_restore(intr_flag);
 }
 
 void
 cpu_idle(void)
 {
-    cprintf("[lab4] cpu_idle placeholder — module1 pmm checks already done.\n");
-    while (1) {
-        /* 空转，等待后续模块三实现真正的调度循环 */
+    while (1)
+    {
+        if (current->need_resched)
+        {
+            schedule();
+        }
     }
 }
 /* ==================== 改代码结束 ==================== */
