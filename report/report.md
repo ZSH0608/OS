@@ -331,6 +331,233 @@ static int copy_mm(uint32_t clone_flags, struct proc_struct *proc);
 
 ---
 
+### 功能模块三：进程调度功能
+
+**负责人：** 2412888-刚栋冰
+
+#### 模块功能描述
+
+**需要实现/修改的函数：**
+
+```c
+void cpu_idle(void);                                         // kern/process/proc.c
+void schedule(void);                                         // kern/schedule/sched.c
+void proc_run(struct proc_struct *proc);                     // kern/process/proc.c
+void switch_to(struct context *from, struct context *to);    // kern/process/switch.S
+```
+
+**功能说明：**
+
+- 本模块负责把已经创建出来的内核线程真正交给 CPU 执行：`cpu_idle` 作为空闲线程的执行主体持续等待调度需求；`schedule` 从进程链表选出下一个可运行线程；`proc_run` 在安全临界区内切换当前线程、页表和执行现场；`switch_to` 完成最底层的寄存器上下文保存与恢复。
+- `cpu_idle` 在 `current->need_resched` 为真时调用 `schedule()`，否则继续空转等待；它永不返回。
+- `schedule` 在关中断临界区内清除 `current->need_resched`，从 `current` 的后继节点开始轮转扫描 `PROC_RUNNABLE`；扫描一周仍无候选时回退 `idleproc`；被选中线程 `runs++`，仅当 `next != current` 时调用 `proc_run`。由于 `idleproc` 不在 `proc_list` 中，以 idle 为起点时必须从链表头开始扫描。
+- `proc_run` 在关中断临界区内依次更新 `current`、按需写 Sv39 `satp` 并刷新 TLB、调用 `switch_to(&prev->context, &proc->context)`。`current` 必须在 `switch_to` 之前更新，因为新线程第一次运行经 `forkret` 时需要读取 `current->tf`。
+- `switch_to` 只负责保存/恢复 `ra`、`sp`、`s0~s11`，不参与调度策略判断。`struct context` 在 RV64 下各字段 8 字节，偏移依次为 `ra=0`、`sp=8`、`s0=16`、…、`s11=104`。
+- 关键难点是切换过程的原子性：`schedule` 的「选择 + 切换」和 `proc_run` 的「`current` + 页表 + 现场」都必须处于 `local_intr_save/restore` 临界区，否则当前线程、页表和实际执行现场可能出现不一致。新线程第一次运行能走到正确入口，依赖模块二预先组织的 `context.ra=forkret`、`context.sp=proc->tf` 以及 `forkret → forkrets → __trapret` 恢复链路。
+- 与其他模块关系：依赖模块二的 `idleproc`/`initproc`、`kernel_thread`/`copy_thread` 与首次运行现场；依赖模块一的 `get_pte`/`boot_pgdir_pa` 与页表基础设施。本模块完成后，`initproc` 才能从 `idleproc` 手中接管 CPU，`test_lab4_schedule` 的两个测试线程才能被真正调度执行。
+
+#### 最终提示词
+
+以下是经过迭代优化后，最终成功实现该功能的提示词（完整版另存为 `lab4_module3_sched_prompt.md`）：
+
+````markdown
+[PROMPT]
+**角色**：你是熟悉 RISC-V Sv39、uCore/rcore 风格内核与上下文切换的实验工程师。
+
+**任务**：在仓库中完成 Lab4「功能模块三：进程调度」，替换以下三处占位实现（必须修改真实文件，而不是只输出代码片段）：
+
+- `kern/process/proc.c`：实现 `void proc_run(struct proc_struct *proc)` 与 `void cpu_idle(void)`，替换文件末尾 `//LAB4 function3 YOUR CODE` 下的占位实现。
+- `kern/schedule/sched.c`：实现 `void schedule(void)`，替换文件中的占位实现。
+- `kern/process/switch.S`：实现 `void switch_to(struct context *from, struct context *to)`，替换占位汇编。
+
+**系统现状与运行链**：
+- 模块二已完成：`idleproc(pid=0)` 复用 `bootstack`、`state=PROC_RUNNABLE`、`need_resched=1`、不在 `proc_list` 中；`initproc(pid=1)` 已完成 `do_fork` 登记，`context.ra=forkret`、`context.sp=proc->tf`。
+- `kern/init/init.c` 最后调用 `cpu_idle()`。
+- 新线程第一次被 `switch_to` 恢复后，执行 `forkret -> forkrets -> __trapret -> sret -> kernel_thread_entry -> init_main`。
+- 时钟中断处理 `kern/trap/trap.c::interrupt_handler` 会把 `current->need_resched` 置 1。
+- `tools/test_lab4.c::test_lab4_schedule` 在 `init_main` 开头执行：创建 2 个测试线程，然后连续 8 次 `current->need_resched = 1; schedule();`，要求两个线程都真正运行过并打印 `[Test Schedule] PASS`。测试线程自身会反复 `need_resched = 1; schedule();`。
+
+**操作要求**：
+- 只替换上述三处占位块，保留文件中其余代码与注释。
+- 不得修改 `struct context` / `struct proc_struct` / `struct trapframe` 的定义、函数签名、公开头文件。
+- 不得改写 `wakeup_proc`、`forkret/forkrets/__trapret`、模块一（`page_insert/page_remove/get_pte`）与模块二（`alloc_proc/proc_init/do_fork/copy_thread`）的实现。
+- 不得使用 `libs/riscv.h` 中的 `lsatp()`：它是 Sv32 语义（`SATP32_MODE | pgdir >> 12`），在 Sv39 下会得到错误的 `satp`。设置 `satp` 必须参照 `kern/mm/pmm.c::enable_paging()`。
+- 不要实现或修改 `do_exit`。测试线程 / `init_main` 返回后进入 `do_exit` panic 属于框架现状，不在本模块范围。
+- 不新增文件、全局变量或与本模块无关的改动。
+
+**输出要求**：
+- 直接编辑文件；完成后汇报每个文件改了哪几段、为什么。
+- 以工程真实代码和下列 `[RELY]`、`[GUARANTEE]`、`[SPECIFICATION]`、`[ACCEPTANCE]` 为准；如与你的通用模板冲突，以本工程事实为准。
+
+[RELY]
+// ===== 数据结构与符号（以仓库真实定义为准）=====
+struct context { uintptr_t ra; uintptr_t sp; uintptr_t s0; ... uintptr_t s11; };
+// RV64：字段连续存放，每个 8 字节；偏移为 ra=0, sp=8, s0=16, s1=24, ..., s11=104
+
+struct proc_struct {
+    enum proc_state state; int pid; int runs; uintptr_t kstack;
+    volatile bool need_resched; struct proc_struct *parent;
+    struct mm_struct *mm; struct context context; struct trapframe *tf;
+    uintptr_t pgdir; uint32_t flags; char name[PROC_NAME_LEN+1];
+    list_entry_t list_link; list_entry_t hash_link;
+};
+extern struct proc_struct *idleproc, *initproc, *current;
+extern list_entry_t proc_list;
+enum proc_state { PROC_UNINIT, PROC_SLEEPING, PROC_RUNNABLE, PROC_ZOMBIE };
+
+// ===== 调度辅助 =====
+local_intr_save(intr_flag);      // 保存 sstatus.SIE 到 intr_flag，若原为开则关中断
+local_intr_restore(intr_flag);   // 仅当 intr_flag 为真时重新开中断；可嵌套
+list_next(le);                   // 返回链表下一项
+le2proc(le, list_link);          // list_entry_t* -> struct proc_struct*
+// 注意：proc_list 以 &proc_list 为哨兵；idleproc 不在 proc_list 中
+
+// ===== 页表切换 =====
+extern uintptr_t boot_pgdir_pa;
+#define SATP_MODE_SV39 8
+#define RISCV_PGSHIFT 12
+// enable_paging() 的实际写法：
+//   write_csr(satp, 0x8000000000000000 | (boot_pgdir_pa >> RISCV_PGSHIFT));
+// 等价写法：((uint64_t)SATP_MODE_SV39 << 60) | (proc->pgdir >> RISCV_PGSHIFT)
+// satp.MODE 位于 bit[63:60]，PPN 位于低位；写 satp 后必须刷新 TLB
+static inline void flush_tlb(void) { asm volatile("sfence.vma"); }
+
+// ===== 首次运行链路 =====
+// switch_to 恢复 context 后：forkret() -> forkrets(current->tf)
+// -> __trapret(RESTORE_ALL + sret) -> kernel_thread_entry -> fn(arg)
+// 因此 switch_to 只需忠实保存/恢复 ra, sp, s0-s11
+
+// ===== 测试语义 =====
+// test_lab4_schedule 连续 8 次直接调用 schedule()，要求两个测试线程都被调度到；
+// 每个测试线程也会主动让出 CPU。调度必须是轮转的，且无死循环。
+// grade 还要求输出：[Test Schedule] PASS
+
+[GUARANTEE]
+必须实现且仅实现以下函数（签名不可变）：
+```c
+void cpu_idle(void);                                          // kern/process/proc.c
+void proc_run(struct proc_struct *proc);                      // kern/process/proc.c
+void schedule(void);                                          // kern/schedule/sched.c
+void switch_to(struct context *from, struct context *to);     // kern/process/switch.S
+```
+
+[SPECIFICATION]
+
+## switch_to
+**Pre-Condition**: `from`、`to` 非空；`from->` 可写；调用发生在内核态。
+**Post-Condition**:
+- 把当前线程的 `ra`、`sp`、`s0~s11` 按 `struct context` 的字段顺序存入 `from`；
+- 从 `to` 载入 `ra`、`sp`、`s0~s11`；
+- 执行 `ret` 后控制流到达 `to->ra`，此时 `sp` 已是目标线程的栈。
+**Requirements**:
+- 进入函数时的 `sp` 必须先被保存再被覆盖；不要依赖当前栈保存中间值。
+- 只允许使用 `a0`/`a1` 和 caller-saved 暂存寄存器；不得破坏目标的 `s0~s11`。
+- 不参与调度策略判断，不访问 `proc_list`、不调用 C 函数。
+
+## schedule
+**Pre-Condition**: `current != NULL`；`proc_list` 已初始化；调用者允许被抢占。
+**Post-Condition**:
+- 进入临界区后先把 `current->need_resched = 0`；
+- 从 `current` 在 `proc_list` 中的下一个节点开始轮转扫描，选出 `state == PROC_RUNNABLE` 的线程；
+- 若扫描一周仍无候选，选择 `idleproc`；
+- 被选中线程 `runs++`；
+- 若选中线程不等于 `current`，调用 `proc_run(next)`；
+- 选择与切换全程处于 `local_intr_save/restore` 保护的临界区内。
+**Requirements**:
+- 扫描必须能在有限步内结束；哨兵 `&proc_list` 不是进程，不能交给 `le2proc`。
+- `current == idleproc` 与 `current` 在链表中两种情况都要处理。
+- 找不到可运行线程时必须有 idle 回退，不能空转或崩溃。
+
+## proc_run
+**Pre-Condition**: `proc != NULL`；`proc->state` 为 `PROC_RUNNABLE`（或 idleproc）；允许从任意内核上下文调用。
+**Post-Condition**:
+- 若 `proc == current`，直接返回，不做无意义切换；
+- 否则在 `local_intr_save/restore` 临界区内：
+  1. 令 `current = proc`；
+  2. 若目标 `pgdir` 与当前页表不同，写 `satp` 为 `(SATP_MODE_SV39 << 60) | (proc->pgdir >> RISCV_PGSHIFT)`，并执行 `flush_tlb()`；
+  3. 调用 `switch_to(&prev->context, &proc->context)` 完成现场切换。
+**Requirements**:
+- 必须先更新 `current`、再切换页表、最后 `switch_to`，保证新线程首次运行经 `forkret` 时 `current->tf` 已正确。
+- 不得在切换后假设局部变量仍属于新线程；`local_intr_restore` 会在旧线程被再次调度回来时执行，这是正确的。
+- 当前实验 idleproc 与 initproc 的 `pgdir` 都是 `boot_pgdir_pa`，但仍要按通用情况处理页表切换。
+- 禁止在 `proc_run` 内再次调用 `schedule`。
+
+## cpu_idle
+**Pre-Condition**: `kern_init` 已调用 `intr_enable()`；`current == idleproc`。
+**Post-Condition**: 永不返回；循环检查 `current->need_resched`，为真时调用 `schedule()`；无调度需求时继续等待。
+**Requirements**:
+- 不要无条件反复调用 `schedule()` 导致空转抢占；只在 `need_resched` 为真时调度。
+- 若 `schedule()` 找不到其他可运行线程而选回 idleproc，`cpu_idle` 必须能继续循环等待。
+- 保持头文件中的 `__attribute__((noreturn))` 语义，不要 return。
+
+[ACCEPTANCE]
+1. `make` 编译、链接通过，无未定义符号。
+2. 运行 QEMU 后至少看到：
+   - `[Test Schedule] PASS`
+   - `this initproc, pid = 1, name = "init"`
+   - `To U: "Hello world!!".`
+   - `To U: "en.., Bye, Bye. :)"`
+3. `make grade` 中 `check Schedule` 输出 OK。
+4. 自检：
+   - `initproc` 能从 `idleproc` 手中接管 CPU；
+   - 两个测试线程都运行过，说明轮转选择有效；
+   - 连续多次 `schedule()` 不会死循环、不会重复初始化临界区、不会丢失中断状态。
+
+[TRAPS]
+1. 使用 `lsatp()` 设置 Sv39 的 `satp` —— 错误，必须用 `8ULL << 60 | pa >> 12` 的写法。
+2. 写 `satp` 后忘记 `flush_tlb()` / `sfence.vma`。
+3. 在 `switch_to` 之后才更新 `current` —— 新线程 `forkret` 会读到旧的 `current->tf`。
+4. `switch_to` 用当前栈保存中间值，或在恢复 `sp` 之后再保存旧 `sp`。
+5. `schedule` 扫描时把哨兵 `&proc_list` 当成进程，或 `current == idleproc` 时从错误位置开始。
+6. 忘记清 `need_resched`，导致测试线程反复抢占、无法推进。
+7. 在 `schedule` 和 `proc_run` 中重复 `runs++`。
+8. 把 `local_intr_restore` 放在 `switch_to` 之前 —— 临界区被提前打开。
+9. 在 `proc_run` 中无条件写 `satp` 而不判断页表差异（不致命，但应说明理由）。
+10. 把 `do_exit` 的 panic 当成模块三的 bug 去改，扩大改动范围。
+````
+
+#### 实现迭代过程
+
+本模块的核心代码一次生成即通过编译与调度测试，迭代主要发生在构建/验证环境。过程如下：
+
+---
+
+##### 第一次迭代
+
+按上述提示词替换三处占位：`switch_to` 保存/恢复 `ra, sp, s0~s11`；`schedule` 在关中断临界区内轮转选择；`proc_run` 更新 `current`、按需切换 `satp`、调用 `switch_to`；`cpu_idle` 检查 `need_resched` 并调度。
+
+**遇到的问题：**
+- 问题1：WSL 默认 PATH 中没有 `riscv64-unknown-elf-*`，非交互式 `bash -lc` 又不会加载 `.bashrc` 中的工具链路径，导致无法直接编译。根因是本机交叉工具链位于 `D:\OS\riscv\...`，需要显式加入 PATH。
+- 问题2：首次在 WSL 中执行 `make grade` 时，`tools/grade.sh` 报 `Syntax error: ")" unexpected`。根因是该脚本在当前 Windows 克隆中为 CRLF 换行，WSL 的 dash 把 `\r` 当成命令的一部分。
+- 说明：以上两个问题都属于构建/验证环境，不涉及模块三内核代码；内核本身的 `make` 已通过。
+
+**问题解决策略：**
+- 针对问题1：在 WSL 命令中显式 `export PATH="$PATH:/mnt/d/OS/riscv/riscv64-unknown-elf-toolchain-10.2.0-2020.12.8-x86_64-linux-ubuntu14/bin"`，不修改仓库文件。
+- 针对问题2：仅对 `tools/grade.sh` 执行 `sed -i 's/\r$//'` 做换行转换；转换后用 `git hash-object --path=code/tools/grade.sh` 与 `git rev-parse HEAD:code/tools/grade.sh` 比对，哈希一致，说明没有内容改动。
+
+---
+
+##### 第二次迭代
+
+**最终结果：**
+
+经过实现与验证，该模块最终：
+- ✅ 编译、链接通过（`make`）
+- ✅ `check_alloc_page` / `check_pgdir` / `check_boot_pgdir` 继续通过
+- ✅ `make grade` 三项全部 OK：`check PMM`、`check Process Create`、`check Schedule`
+- ✅ 总分 `30/30`
+- ✅ QEMU 输出 `[Test Schedule] PASS`，并打印 `this initproc, pid = 1, name = "init"` 与两行 `To U:` 输出
+- 完整串口日志见 `./images/qemu_module3.log`
+
+**关键改进点/核对点总结：**
+1. `switch_to` 严格按 `struct context` 的偏移 `0/8/16/…/104` 保存和恢复 `ra, sp, s0~s11`，先保存 `from` 的全部字段再恢复 `to`，且不在切换后的栈上保存中间值。
+2. `schedule` 处理了 `idleproc` 不在 `proc_list` 中的特殊情况：以 idle 为起点时从链表头扫描，否则从 `current` 的后继开始；扫描遇到哨兵 `&proc_list` 时跳过，保证有限步终止；无候选时回退 `idleproc`。
+3. `proc_run` 的顺序固定为 `current = proc` → 按需写 `satp` + `flush_tlb()` → `switch_to`；`satp` 使用 Sv39 格式 `((uint64_t)SATP_MODE_SV39 << 60) | (pgdir >> RISCV_PGSHIFT)`，没有使用 Sv32 语义的 `lsatp()`。
+4. `schedule` 与 `proc_run` 都用 `local_intr_save/restore` 保护临界区；`switch_to` 返回时 `local_intr_restore` 在旧线程被再次调度回来时执行，属于预期行为。
+5. `do_exit` 的 panic 是框架占位（`kern/process/proc.c:209`），QEMU 日志末尾出现 `kernel panic ... process exit!!.` 不影响 `make grade` 的三项检查，未扩大改动范围。
+
+---
+
 ## 五、测试与验证
 
 本阶段验证范围：功能模块一（虚拟内存页操作）。在填好 lab2/lab3 依赖并实现 `page_insert`/`page_remove` 后执行 `make && make qemu`。
@@ -342,6 +569,8 @@ static int copy_mm(uint32_t clone_flags, struct proc_struct *proc);
 - `kmalloc_init() succeeded!` / `check_vmm() succeeded.`
 
 说明：模块三仍为占位实现，故尚未跑通完整 `make grade` 的 Schedule 项；模块二的 Process Create 项已按 `test_lab4_process_create` 断言实现完成（见下）。
+
+> 注：以上为模块一阶段的历史记录。模块三实现后，完整 `make grade` 的三项检查均已通过，结果见下方「模块三验证（进程调度）」。
 
 **模块一测试截图：**
 
@@ -362,6 +591,28 @@ static int copy_mm(uint32_t clone_flags, struct proc_struct *proc);
 `make grade` 对应检查项：`[Test Process Create] PASS`。
 
 > 验证：已在 WSL（riscv64-unknown-elf-gcc 14.2.0 + qemu-system-riscv64）中编译并运行，`[Test Process Create] PASS` 通过。完整文本日志见：`./images/qemu_module2.log`。
+
+---
+
+### 模块三验证（进程调度）
+
+本模块通过注入到 `init_main` 开头的 `test_lab4_schedule()` 验证。测试流程与关键断言：
+
+- `kernel_thread(test_lab4_thread, 1, 0)` 与 `kernel_thread(test_lab4_thread, 2, 0)` 创建两个测试线程；
+- 测试线程各自循环 3 次，设置 `test_thread1_ran` / `test_thread2_ran` 标记，然后执行 `current->need_resched = 1; schedule();`；
+- `test_lab4_schedule` 连续执行 8 次 `current->need_resched = 1; schedule();`，最后断言两个标记都非 0，并打印 `[Test Schedule] PASS`；
+- 通过条件：`[Test Schedule] PASS`，且 initproc 输出 `this initproc, pid = 1, name = "init"`、`To U: "Hello world!!".`、`To U: "en.., Bye, Bye. :)"`。
+
+`make grade` 完整结果：
+
+```text
+  -check PMM:                                OK
+  -check Process Create:                     OK
+  -check Schedule:                           OK
+Total Score: 30/30
+```
+
+> 验证环境：WSL + `riscv64-unknown-elf-gcc (SiFive GCC-Metal 10.2.0-2020.12.8) 10.2.0` + `qemu-system-riscv64 10.2.1`。完整串口日志见 `./images/qemu_module3.log`。日志末尾的 `kernel panic at kern/process/proc.c:209: process exit!!.` 来自框架中尚未实现的 `do_exit` 占位，发生在三项测试全部 PASS 之后，不影响 grade 结果。
 
 ---
 

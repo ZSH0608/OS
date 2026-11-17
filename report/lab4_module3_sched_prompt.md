@@ -1,12 +1,7 @@
-# Lab4 功能模块三提示词（进程调度）+ Challenge 提示词
-
-> 使用方式：优先使用「提示词 A」一次性实现；若模型漏项或编译失败，改用「提示词 B」分步实现；出现断言/死循环时使用「提示词 C」。Challenge 使用「提示词 D」，并追加「提示词 D+」做交叉核验。
->
-> 使用前请确认 AI 能直接读取仓库（Claude Code / Cursor / IDE Agent）；若只能对话，请把提示词 A 中 `[RELY]` 涉及的四个源文件一并附上。
-
+# Lab4 功能模块三 + Challenge 提示词
 ---
 
-## 一、提示词 A：主实现提示词（一次性完成四个函数）
+## 一、提示词 A：主实现提示词
 
 ````markdown
 [PROMPT]
@@ -326,45 +321,5 @@ Challenge 是“读代码 + 写报告”，应显式要求 AI 只读、引用行
 ```
 ````
 
----
 
-## 五、人工验收清单（不必发给 AI）
 
-实现完成后逐项核对：
-
-- [ ] `kern/process/switch.S` 的保存/恢复偏移为 0, 8, 16, …, 104，顺序为 `ra, sp, s0..s11`。
-- [ ] `switch_to` 中先保存 `from` 全部字段，再恢复 `to`；没有在恢复 `sp` 后回头写旧栈。
-- [ ] `schedule` 的临界区覆盖“清 need_resched + 选择 + `proc_run`”；扫描能终止；`idleproc` 不在 `proc_list` 这一事实被正确处理。
-- [ ] `schedule` 找不到可运行线程时回退 `idleproc`；`next == current` 时不调用 `proc_run`。
-- [ ] `proc_run` 顺序为 `current = proc` → 页表（如需）→ `switch_to`。
-- [ ] `satp` 写法为 Sv39（`8ULL << 60 | pa >> 12`），且写后执行 `flush_tlb()`；全仓库没有调用 `lsatp()`。
-- [ ] `cpu_idle` 只在 `need_resched` 时 `schedule()`，且永不返回。
-- [ ] `make` 无警告级错误；QEMU 输出 `[Test Schedule] PASS`；`make grade` 的 `check Schedule` 为 OK。
-- [ ] 没有修改模块一、模块二、`do_exit`、结构体定义或测试脚本。
-
-### 常见失败现象与优先排查点
-
-| 现象 | 优先排查 |
-|---|---|
-| 链接报 `switch_to` 未定义/重复定义 | 文件实际为 `kern/process/switch.S`；占位块是否被完整替换；`.globl` 是否保留 |
-| 卡在 `cpu_idle` 不再输出 | `schedule` 是否从未选中 initproc；`need_resched` 是否被清零；`proc_list` 遍历起点/终止条件 |
-| 第一次切换 triple fault / 取指异常 | `satp` 是否写成 Sv32；是否漏 `flush_tlb`；`context.sp` 是否被 switch_to 破坏 |
-| 反复打印 / 测试线程不推进 | `need_resched` 未清零；`schedule` 总选回当前线程；`runs++` 位置导致选择偏差 |
-| `[Test Schedule] PASS` 后 panic | 框架 `do_exit` 占位导致，属预期，不在模块三范围 |
-| 两个测试线程只有一个运行 | 轮转起点错误；`current == idleproc` 分支处理错误；哨兵被当成进程 |
-
----
-
-## 六、建议的提示词迭代记录模板（写入实验报告）
-
-每个模块保留“提示词版本 → 现象 → 根因 → 修改”的闭环，便于报告体现迭代过程：
-
-```markdown
-### 第 N 次迭代
-- 提示词改动：
-- 生成/修改内容：
-- 实际现象（make / qemu / grade 输出）：
-- 根因：
-- 修复：
-- 回归结果：
-```
