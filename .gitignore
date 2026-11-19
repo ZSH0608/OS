@@ -19,3 +19,10 @@ tags
 lab1/
 lab2_report/
 code/docs/
+
+# lab4 local-only materials (do not publish)
+report/images/qemu_module1.log
+report/images/qemu_module2.log
+report/images/qemu_module3.log
+report/images/test_result.png
+report/lab4_make_grade_manual.md

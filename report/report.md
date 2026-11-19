@@ -4,49 +4,41 @@
 
 | 项目 | 内容 |
 |------|------|
-| **实验名称** | Lab X: [实验名称] |
-| **小组成员** | 学号1-姓名1、学号2-姓名2、学号3-姓名3 |
-| **完成日期** | YYYY-MM-DD |
+| **实验名称** | Lab 4: 进程管理 |
+| **小组成员** | 2413157-张书晗、2411514-蒲富坤、2412888-刚栋冰 |
+| **完成日期** | 2026-11-19 |
 
 ### 小组分工
 
-练习如何分工？
-
 | 成员 | 负责的练习/模块 |
 |------|----------------|
-| 学号1-姓名1 | [练习或模块名称] |
-| 学号2-姓名2 | [练习或模块名称] |
-| 学号3-姓名3 | [练习或模块名称] |
+| 2413157-张书晗 | 功能模块一（虚拟内存页操作 `page_insert`/`page_remove`）、对应报告撰写、最终报告统筹 |
+| 2411514-蒲富坤 | 功能模块二（进程创建及初始化）、对应报告撰写 |
+| 2412888-刚栋冰 | 功能模块三（进程调度）、扩展练习 Challenge、对应报告撰写 |
 
 实验报告如何分工？
+
+张书晗完成功能模块一（虚拟内存页操作）的实现与「功能模块一」章节撰写，并负责第三节整体逻辑分析、第五节测试汇总与第六节总结；蒲富坤完成功能模块二（进程创建及初始化）的实现与「功能模块二」章节撰写；刚栋冰完成功能模块三（进程调度）与扩展练习 Challenge 的解答，并撰写「功能模块三」与 Challenge 相关报告内容。
 
 ---
 
 ## 一、实验目的
 
-<!-- 说明本次实验的主要目标和预期成果 -->
-
-本实验的主要目的是：
-
-1. [目的1：例如，理解用户态进程如何通过系统调用进入内核]
-2. [目的2：例如，掌握进程创建、执行、退出的完整生命周期]
-3. [目的3：例如，学习使用 AI 辅助开发操作系统核心功能]
+1. 了解虚拟内存管理的基本结构，掌握虚拟内存的组织与管理方式
+2. 了解内核线程创建/执行的管理过程
+3. 了解内核线程的切换和基本调度过程
 
 ---
 
 ## 二、实验环境
 
-你们使用的 AI 工具
-
 | 成员 | AI 编程工具 | 底层模型 | 备注 |
 |------|------------|---------|------|
-| 学号1-姓名1 | [例如：Cline（VS Code插件） / Claude Code（终端 Agent） / DeepSeek Harness等] | [例如：Claude Sonnet 4.5 / GPT-5.5 / DeepSeek-V4-Flash等] | [可选：特殊配置等] |
-| 学号2-姓名2 | | | |
-| 学号3-姓名3 | | | |
+| 2413157-张书晗 | Codex（Cursor插件），Claude Code（终端 Agent） | gpt-6 Astra, Claude Fable 5.1 | |
+| 2411514-蒲富坤 | Claude Code（终端 Agent）, Codex（VS Code插件） | gpt-6 Astra, deepseek-v4-pro | |
+| 2412888-刚栋冰 | Claude Code（终端 Agent）, Codex（VS Code插件） | gpt-6 Astra, Claude Fable 5.1 | |
 
-**说明：**
-- **AI 编程工具**：指具体使用的终端工具、编辑器插件、桌面应用或浏览器界面
-- **底层模型**：指该工具使用的大语言模型及版本
+构建环境：交叉工具链 `riscv64-unknown-elf-*`（10.2.0，GNU as 2.47）、模拟器 `qemu-system-riscv64`（10.2），均在 WSL 中运行。
 
 ---
 
@@ -54,27 +46,31 @@
 
 ### 2.1 本章节的逻辑主线
 
-[请用自己的话描述本章实验的核心主线，例如：
-- 本章围绕哪个核心主题展开？（例如：用户进程管理、虚拟内存、文件系统等）
-- 整个实验解决什么问题？（例如：如何让用户程序运行在操作系统之上）]
+Lab4 的主题是**进程管理**，要解决的问题是：在已经具备物理内存管理、页表与中断能力之后，如何让内核从只能跑一段内核代码推进到能够创建多个内核线程，并在它们之间调度、切换。
+
+执行链：
+
+`kern_init -> pmm_init -> pic_init/idt_init -> vmm_init -> proc_init -> cpu_idle -> schedule -> proc_run -> switch_to`
 
 ### 2.2 功能的逐步实现
 
-[说明本章实验是按照什么顺序逐步实现各个功能的，以及为什么要按这个顺序，例如：
+本次实验的逻辑顺序是：虚拟内存页操作 → 进程创建与初始化 → 进程调度：
 
-1. 首先实现**功能A** → 为什么首先实现这个？（例如：建立系统调用接口是后续所有用户态功能的基础）
-2. 接着再完善**功能B** → 为什么接着实现这个？（例如：有了系统调用后，需要能够加载和启动第一个用户进程）
-3. 然后完成**功能C** → 为什么然后实现这个？（例如：有了第一个进程后，需要实现进程复制功能）
-4. 最后补充了**功能D** → 为什么最后实现这个？（例如：最后完善进程退出和清理机制，形成完整闭环）]
+1. **先做功能模块一：虚拟内存页操作（`page_insert` / `page_remove`）**  
+   线程最终都要落在某个地址空间上运行，若页表映射、物理页引用计数与 TLB 失效不同步，后续创建线程、切换页表都会出错，因此先保证建立映射和撤销映射是正确的。
+
+2. **再做功能模块二：进程创建及初始化（`alloc_proc` / `proc_init` / `kernel_thread` / `do_fork` / `copy_thread` / `copy_mm`）**  
+   有了可用的地址空间操作后，才能把能跑内核代码推进到能创建并登记多个内核线程，要得到干净的 PCB，建立 `idleproc` 与 `initproc`，并把首次运行所需的 `trapframe`/`context` 放到新线程内核栈上，只不过`copy_mm` 我们本次实验不实现，只保留接口形态，不做真实用户地址空间复制。
+
+3. **最后做功能模块三：进程调度（`cpu_idle` / `schedule` / `proc_run` / `switch_to`）**  
+   线程对象创建出来之后，还需要调度器选出下一个可运行线程，在临界区内切换 `current`、页表与寄存器上下文，只有这一步完成后，`initproc` 才能从 `idleproc` 手中接管 CPU 并真正执行。
+
+4. **扩展练习 Challenge**  
+   在上述闭环可用后，再分析 `local_intr_save`/`local_intr_restore` 如何开关中断，并结合 `get_pte` 讨论不同分页模式与函数拆分问题。
 
 ---
 
 ## 四、实验内容与实现
-
-<!-- 
-说明：本部分按照 exercises 文档中的练习顺序组织
-每个功能模块或者练习中可能包含多项任务，请根据实际情况调整
--->
 
 ### 功能模块一：虚拟内存页操作功能
 
@@ -97,8 +93,6 @@ void page_remove(pde_t *pgdir, uintptr_t la);                                 //
 - 与其他模块关系：依赖已实现的 `get_pte` / `pte_create` / `tlb_invalidate` 与物理页分配器；为后续页表测试、内核映射检查和线程地址空间逻辑提供基础。本实验以 `/Volumes/T7/lab4_new` 框架为底（而非直接在 lab3 分支上改），并把 lab2/lab3 代码填回标注位置。
 
 #### 最终提示词
-
-以下是经过迭代优化后，最终成功实现该功能的提示词：
 
 ````markdown
 [PROMPT]
@@ -168,11 +162,11 @@ void page_remove(pde_t *pgdir, uintptr_t la);
 
 **遇到的问题：**
 - 问题1：本机 QEMU 使用框架默认 `-device loader` 时 OpenSBI Next Address 为 0，内核进不去；改为 `-kernel` 后仍因 lab4 原始 `entry.S` 缺少 0x80000000 恒等映射与虚址跳转而在开启 Sv39 后取指死循环。
-- 问题2：`check_pgdir()` 已通过，但 `check_boot_pgdir()` 在 `strcpy((void*)0x100, ...)` 处整机重启。根因是框架 `get_pte` 给非叶页表项设置了 `PTE_U`，违反 RISC-V「非叶项 R/W/X/U 必须为 0」的约定，硬件页表行走失败。
+- 问题2：`check_pgdir()` 已通过，但 `check_boot_pgdir()` 在 `strcpy((void*)0x100, ...)` 处整机重启。原因是框架 `get_pte` 给非叶页表项设置了 `PTE_U`，违反 RISC-V「非叶项 R/W/X/U 必须为 0」的约定，硬件页表行走失败。
 
 **问题解决策略：**
-- 针对问题1：迁入 lab3 已验证的 `entry.S` 恒等映射 + `.Lvirt_entry` 跳转，并修正 Makefile/`grade.sh` 的 QEMU 启动参数（环境/启动问题，不改提示词主体）。
-- 针对问题2：将非叶项改为 `pte_create(ppn, 0)`；同步把 `check_pgdir` 中对 `boot_pgdir_va[0] & PTE_U` 的断言改为检查 `PTE_V`。这属于保留真实硬件语义的修正，与提示词中「TLB/页表一致性」要求一致。
+- 针对问题1：迁入 lab3 已验证的 `entry.S` 恒等映射 + `.Lvirt_entry` 跳转，并修正 Makefile/`grade.sh` 的 QEMU 启动参数。
+- 针对问题2：将非叶项改为 `pte_create(ppn, 0)`；同步把 `check_pgdir` 中对 `boot_pgdir_va[0] & PTE_U` 的断言改为检查 `PTE_V`。
 
 ---
 
@@ -181,14 +175,13 @@ void page_remove(pde_t *pgdir, uintptr_t la);
 **最终结果：**
 
 经过 2 次迭代，该模块最终：
-- ✅ 编译通过（`make`）
-- ✅ `check_alloc_page` / `check_pgdir` / `check_boot_pgdir` 全部 succeeded
-- ✅ `kmalloc_init` / `check_vmm` 通过；随后进入模块二占位的 `proc_init`（模块二/三尚未用提示词实现）
+- 编译通过且`check_alloc_page` / `check_pgdir` / `check_boot_pgdir` 全部 succeeded
+- `kmalloc_init` / `check_vmm` 通过，随后进入模块二的 `proc_init`
 
 **关键改进点总结：**
-1. 在实现中用 static `page_remove_pte` 统一「撤映射 + 降引用 + TLB 失效」，对应提示词 Case 3 与 `page_remove` 幂等要求。
-2. 明确非叶 PTE 不得带 `PTE_U`，否则 `check_boot_pgdir` 的真实 MMU 访问会失败——这是提示词「保留真实语义」在 RISC-V 上的具体落地。
-3. 验证阶段以框架自带 `check_pgdir`/`check_boot_pgdir` 为准；完整 `make grade` 还需后续完成模块二/三。
+1. 增加内部函数 `page_remove_pte`：删除某个页表项时，一并完成「清页表项、减少物理页引用计数、必要时释放物理页、刷新 TLB」。`page_insert` 在替换旧映射时，以及 `page_remove` 删除映射时，都调用它，避免两处逻辑写不一致。
+2. 中间级页表项只保留有效位 `PTE_V`，不要设置 `PTE_U`。若中间项带上用户位，硬件按 RISC-V 规则无法正确走页表，`check_boot_pgdir` 访问已映射的低地址会失败。
+3. 本模块先用 `check_pgdir` / `check_boot_pgdir` 验证映射与引用计数；三项 `make grade` 在模块二、三完成后一并得到 `30/30`。
 
 ---
 
@@ -320,9 +313,9 @@ static int copy_mm(uint32_t clone_flags, struct proc_struct *proc);
 **最终结果：**
 
 经过 2 次迭代，该模块最终：
-- ✅ 编译通过（`make`）
-- ✅ `test_lab4_process_create` 断言全部满足（idleproc 与 initproc 的 pid/state/parent/context 等字段一致）
-- ✅ `proc_init` 返回后 `current == idleproc`，`initproc` 已登记为 pid=1 的就绪线程，等待模块三调度
+- 编译通过（`make`）
+- `test_lab4_process_create` 断言全部满足（idleproc 与 initproc 的 pid/state/parent/context 等字段一致）
+- `proc_init` 返回后 `current == idleproc`，`initproc` 已登记为 pid=1 的就绪线程，等待模块三调度
 
 **关键改进点总结：**
 1. 严格区分「idleproc 复用现场」与「initproc 经 do_fork 复制」两条创建路径：前者手动打 pid=0 / bootstack / need_resched，后者走完整 7 步 fork。
@@ -542,11 +535,11 @@ void switch_to(struct context *from, struct context *to);     // kern/process/sw
 **最终结果：**
 
 经过实现与验证，该模块最终：
-- ✅ 编译、链接通过（`make`）
-- ✅ `check_alloc_page` / `check_pgdir` / `check_boot_pgdir` 继续通过
-- ✅ `make grade` 三项全部 OK：`check PMM`、`check Process Create`、`check Schedule`
-- ✅ 总分 `30/30`
-- ✅ QEMU 输出 `[Test Schedule] PASS`，并打印 `this initproc, pid = 1, name = "init"` 与两行 `To U:` 输出
+- 编译、链接通过（`make`）
+- `check_alloc_page` / `check_pgdir` / `check_boot_pgdir` 继续通过
+- `make grade` 三项全部 OK：`check PMM`、`check Process Create`、`check Schedule`
+- 总分 `30/30`
+- QEMU 输出 `[Test Schedule] PASS`，并打印 `this initproc, pid = 1, name = "init"` 与两行 `To U:` 输出
 - 完整串口日志见 `./images/qemu_module3.log`
 
 **关键改进点/核对点总结：**
@@ -560,50 +553,22 @@ void switch_to(struct context *from, struct context *to);     // kern/process/sw
 
 ## 五、测试与验证
 
-本阶段验证范围：功能模块一（虚拟内存页操作）。在填好 lab2/lab3 依赖并实现 `page_insert`/`page_remove` 后执行 `make && make qemu`。
+三项功能全部实现后，先 `make qemu` 观察内核启动与 initproc 运行，再 `make grade` 跑自动评分。
 
-关键输出包括：
-- `check_alloc_page() succeeded!`
-- `check_pgdir() succeeded!`
-- `check_boot_pgdir() succeeded!`
-- `kmalloc_init() succeeded!` / `check_vmm() succeeded.`
+### 5.1 `make qemu` 手动运行
 
-说明：模块三仍为占位实现，故尚未跑通完整 `make grade` 的 Schedule 项；模块二的 Process Create 项已按 `test_lab4_process_create` 断言实现完成（见下）。
+结果输出：
+- 内存与页表自检通过：`check_alloc_page() succeeded!`、`check_pgdir() succeeded!`、`check_boot_pgdir() succeeded!`
+- 虚拟内存初始化通过：`kmalloc_init() succeeded!`、`check_vma_struct() succeeded!`、`check_vmm() succeeded!`
+- 创建并调度到 initproc：`this initproc, pid = 1, name = "init"`
+- initproc 打印：`To U: "Hello world!!".`、`To U: "en.., Bye, Bye. :)"`
+- 随后进入框架占位实现：`kernel panic at kern/process/proc.c:208: process exit!!.`，并落入 kernel debug monitor
 
-> 注：以上为模块一阶段的历史记录。模块三实现后，完整 `make grade` 的三项检查均已通过，结果见下方「模块三验证（进程调度）」。
+![make qemu 运行结果](./images/make_qemu.png)
 
-**模块一测试截图：**
+### 5.2 `make grade` 自动评分
 
-![测试结果截图](./images/test_result.png)
-
-完整文本日志见：`./images/qemu_module1.log`
-
----
-
-### 模块二验证（进程创建及初始化）
-
-本模块通过注入到 `proc_init` 末尾的 `test_lab4_process_create()` 进行验证，关键断言：
-
-- `current == idleproc`；
-- idleproc：`pid == 0`、`state == PROC_RUNNABLE`、`kstack == bootstack`、`parent == NULL`、`mm == NULL`、`tf == NULL`、`runs == 0`、`flags == 0`、`context.ra == 0`；
-- initproc：`pid == 1`、`state == PROC_RUNNABLE`、`parent == idleproc`、`mm == NULL`、`context.ra != 0`、`context.sp != 0`。
-
-`make grade` 对应检查项：`[Test Process Create] PASS`。
-
-> 验证：已在 WSL（riscv64-unknown-elf-gcc 14.2.0 + qemu-system-riscv64）中编译并运行，`[Test Process Create] PASS` 通过。完整文本日志见：`./images/qemu_module2.log`。
-
----
-
-### 模块三验证（进程调度）
-
-本模块通过注入到 `init_main` 开头的 `test_lab4_schedule()` 验证。测试流程与关键断言：
-
-- `kernel_thread(test_lab4_thread, 1, 0)` 与 `kernel_thread(test_lab4_thread, 2, 0)` 创建两个测试线程；
-- 测试线程各自循环 3 次，设置 `test_thread1_ran` / `test_thread2_ran` 标记，然后执行 `current->need_resched = 1; schedule();`；
-- `test_lab4_schedule` 连续执行 8 次 `current->need_resched = 1; schedule();`，最后断言两个标记都非 0，并打印 `[Test Schedule] PASS`；
-- 通过条件：`[Test Schedule] PASS`，且 initproc 输出 `this initproc, pid = 1, name = "init"`、`To U: "Hello world!!".`、`To U: "en.., Bye, Bye. :)"`。
-
-`make grade` 完整结果：
+`make grade` 会注入 lab4 测试后重新编译并评分，结果：
 
 ```text
   -check PMM:                                OK
@@ -612,7 +577,7 @@ void switch_to(struct context *from, struct context *to);     // kern/process/sw
 Total Score: 30/30
 ```
 
-> 验证环境：WSL + `riscv64-unknown-elf-gcc (SiFive GCC-Metal 10.2.0-2020.12.8) 10.2.0` + `qemu-system-riscv64 10.2.1`。完整串口日志见 `./images/qemu_module3.log`。日志末尾的 `kernel panic at kern/process/proc.c:209: process exit!!.` 来自框架中尚未实现的 `do_exit` 占位，发生在三项测试全部 PASS 之后，不影响 grade 结果。
+![make grade 评分结果](./images/make_grade.png)
 
 ---
 
@@ -620,12 +585,73 @@ Total Score: 30/30
 
 ### 对操作系统的理解
 
-1. 列出你们认为本实验中重要的知识点，以及与对应的 OS 原理中的知识点，并简要说明二者的含义、关系和差异
-2. 列出你们认为 OS 原理中很重要、但在本实验中没有对应上的知识点
+#### 1. 本实验的要点及其与操作系统原理的对应
+
+**（1）进程控制块（PCB）的设计与实现**
+
+- 实验内容：`struct proc_struct` 包含 `state`、`pid`、`kstack`、`context`、`trapframe`、`mm`、`pgdir` 等字段；PCB 用 `kmalloc` 在内核堆分配，内核栈由 `setup_kstack` 分配物理页。
+- 原理对应：PCB 记录进程状态与资源；进程由程序、执行状态与资源共同构成。
+- 说明：`proc_struct` 把理论中的抽象落到具体数据结构上；实验对文件表、信号等复杂字段作了简化。
+
+**（2）进程状态转换与调度**
+
+- 实验内容：状态集合为 `PROC_UNINIT`、`PROC_RUNNABLE`、`PROC_SLEEPING`、`PROC_ZOMBIE`；相关函数包括 `wakeup_proc`、`proc_run`；调度时遍历 `proc_list` 选择可运行进程。
+- 原理对应：五状态模型（新建、就绪、运行、阻塞、终止）及常见调度算法（FCFS、优先级、时间片轮转）。
+- 说明：实验简化为四状态并用线性扫描调度，重点在机制而非性能；后续可扩展优先级或时间片。
+
+**（3）上下文切换（Context Switch）**
+
+- 实验内容：`struct context` 保存被调用者保存寄存器（`ra`、`sp`、`s0`–`s11`）；`switch_to` 汇编完成保存/恢复；`proc_run` 先切页表再切上下文。
+- 原理对应：切换步骤包括保存现场、选择进程、恢复现场；上下文含寄存器、PC、栈指针和页表基址等。
+- 说明：实验区分 `context`（用于切换）与 `trapframe`（用于中断/异常返回），并依赖 RISC-V 调用约定管理寄存器。
+
+**（4）进程创建（fork）**
+
+- 实验内容：`do_fork` 分配 PCB、内核栈并布置 `trapframe`/`context`；`copy_thread` 设置子进程初始返回值与执行环境；通过寄存器区分父子返回值。
+- 原理对应：`fork` 创建进程副本，通常可结合写时复制（COW）降低开销。
+- 说明：本次主要针对内核线程（共享地址空间），`copy_mm` 未实现用户空间复制；真正的用户级 `fork` 与 COW 需后续扩展。
+
+**（5）虚拟内存与分页机制**
+
+- 实验内容：完成 `page_insert`/`page_remove`；依赖 Sv39 三级页表、`get_pte` 按需分配中间页表、页表项标志位（`V`/`R`/`W`/`X`/`U` 等）以及 `KADDR`/`PADDR` 等地址转换。
+- 原理对应：虚拟内存提供地址隔离与按需分页，多级页表降低页表占用，TLB 加速地址转换。
+- 说明：实验要求映射建立/撤销时同步维护引用计数并刷新 TLB；中间级页表项不得带 `PTE_U`，否则硬件页表行走会失败。
+
+**（6）临界区保护与中断管理**
+
+- 实验内容：`local_intr_save`/`local_intr_restore` 通过读写 `sstatus` 的 SIE 位开关中断，并保存原始中断状态以支持嵌套保护。
+- 原理对应：临界区互斥、同步原语，以及最底层的关中断机制。
+- 说明：关中断是单核内核中最直接的同步手段；多核还需更细粒度同步（如自旋锁）。
+
+**（7）内核栈与用户栈**
+
+- 实验内容：每个进程经 `setup_kstack` 获得独立内核栈，用于保存 `trapframe` 与内核调用链；`proc->tf` 指向栈上的 `trapframe`。
+- 原理对应：用户栈与内核栈分属不同特权级，切换时需更换栈指针以保护内核。
+- 说明：本实验主要为内核线程分配内核栈，用户态栈相关内容在后续实验补充。
+
+**（8）进程标识符（PID）管理**
+
+- 实验内容：`get_pid` 遍历 `proc_list` 保证 PID 唯一，并用 `last_pid`、`next_safe` 优化查找；支持回收但避免与现存进程冲突。
+- 原理对应：PID 是进程唯一标识，需有分配与回收策略。
+- 说明：当前为线性分配/回收；生产系统可能使用位图等更高效结构。
+
+#### 2. 原理中重要但本实验未覆盖的内容
+
+1. **完整进程退出与回收**：真实的 `do_exit`、父进程 `wait`、僵尸进程回收等（本实验 `do_exit` 仍是 panic 占位）。
+2. **进程间通信（IPC）**：管道、消息队列、共享内存、套接字等；本实验聚焦创建与调度。
+3. **优先级与多级反馈队列调度**：当前调度器实现简单，后续可加优先级字段与多队列。
+4. **多核（SMP）支持**：负载均衡、锁扩展与缓存一致性；实验在单核环境简化。
+5. **实时调度**：对时延有严格要求的策略与时钟管理，超出本次基础范围。
+6. **用户级线程与轻量级进程**：本实验以内核线程为主。
+7. **写时复制（COW）与缺页/置换**：需配合页错误处理；当前未实现 `copy_mm`。
+8. **信号机制**：异步通知、信号栈与掩码管理。
+9. **进程组与会话 / 守护进程 / 资源限制（ulimit）**：作业控制、后台服务与资源配额等更高层管理功能。
+10. **系统调用与用户程序加载（exec）**：从用户态进入内核并加载可执行文件的完整路径，通常在后续实验出现。
 
 ### AI 协作开发的经验
 
-[写出你们在与 AI 协作过程中实际收获的经验或者感悟]
+1. **提示词要写系统必须满足什么，不要写成逐步伪代码。** 写提示词时按照 lab0.5 的四段式（`[PROMPT]`/`[RELY]`/`[GUARANTEE]`/`[SPECIFICATION]`）把边界、错误返回值、引用计数与 TLB 约束写清楚后，生成结果会更好，更接近直接可编译、可测试的实现。
+2. **验证要分阶段。** 模块一先看 `check_pgdir`/`check_boot_pgdir`，模块二、三再看进程创建与调度输出，最后用 `make grade` 做注入测试汇总，分阶段能更快定位是映射问题、PCB 初始化问题还是切换问题。
 
 ---
 

@@ -65,7 +65,10 @@ void test_lab4_process_create(void)
 static volatile int test_thread1_ran;
 static volatile int test_thread2_ran;
 
-static void test_lab4_thread(void *arg)
+/* ==================== 开始改代码 ====================
+ * 新版 GCC 将不兼容函数指针视为错误：kernel_thread 需要 int (*)(void *)。
+ * ==================== */
+static int test_lab4_thread(void *arg)
 {
     int id = (int)(intptr_t)arg;
     int i;
@@ -81,7 +84,9 @@ static void test_lab4_thread(void *arg)
         current->need_resched = 1;
         schedule();
     }
+    return 0;
 }
+/* ==================== 改代码结束 ==================== */
 
 void test_lab4_schedule(void)
 {

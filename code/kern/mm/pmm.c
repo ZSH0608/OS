@@ -293,41 +293,47 @@ struct Page *get_page(pde_t *pgdir, uintptr_t la, pte_t **ptep_store)
     return NULL;
 }
 
-//LAB4 function1 YOUR CODE
+//LAB4 function1 2413157
 /* ==================== 开始改代码 ====================
  * 功能模块一：虚拟内存页操作（page_insert / page_remove）
  * 依据提示词：保持「页表项、引用计数、TLB」三者同步；
  * page_remove 幂等；page_insert 失败返回 -E_NO_MEM 且不留半完成映射。
  * ==================== */
 
-/* page_remove_pte - 撤销 *ptep 指向的有效映射（若存在） */
+/* page_remove_pte - 撤销 *ptep 指向的有效映射（若存在） 
+已经拿到某个虚拟地址对应的页表项指针时，如果该项有效，就删掉这个映射，并正确处理物理页引用计数和 TLB*/
 static inline void page_remove_pte(pde_t *pgdir, uintptr_t la, pte_t *ptep) {
     if (*ptep & PTE_V) {
+        //从有效页表项里取出物理页号，转成对应的 struct Page *
         struct Page *page = pte2page(*ptep);
-        /* 引用计数降到 0 时归还物理页 */
+        /* 引用计数降到 0 时归还物理页
+        page_ref_dec：把 page->ref 减 1，并返回减完后的值。
+            ref 表示这块物理页当前被多少个有效页表映射引用。
+、      */
         if (page_ref_dec(page) == 0) {
             free_page(page);
         }
         *ptep = 0;
-        tlb_invalidate(pgdir, la);
+        tlb_invalidate(pgdir, la);//让 CPU 丢掉与 la 相关的 TLB 缓存。否则页表已改、TLB 里可能还留着旧翻译。
     }
 }
 
-/* page_remove - 幂等删除 la 上的映射 */
+/* page_remove - 幂等删除 la（虚拟地址） 上的映射 */
 void page_remove(pde_t *pgdir, uintptr_t la) {
     pte_t *ptep = get_pte(pgdir, la, 0);
-    if (ptep != NULL) {
-        page_remove_pte(pgdir, la, ptep);
+    //get_pte 定位末级页表项；create=1 时缺中间页表就建
+    if (ptep != NULL) { //找到末级项 → ptep 非 NULL，定位成功
+        page_remove_pte(pgdir, la, ptep);//把真正的清理交给上一节的函数
     }
 }
 
-/* page_insert - 建立/更新 la -> page 映射，权限为 perm */
+/* page_insert - 建立/更新 la（虚拟地址） -> page（物理页） 映射，权限为 perm */
 int page_insert(pde_t *pgdir, struct Page *page, uintptr_t la, uint32_t perm) {
-    pte_t *ptep = get_pte(pgdir, la, 1);
+    pte_t *ptep = get_pte(pgdir, la, 1);//create=1：中间级页表缺失时尝试分配。成功：ptep 指向 la 对应末级项页表项
     if (ptep == NULL) {
         return -E_NO_MEM;
     }
-    /* 先增加目标页引用；若最终发现是「同页重映射」再抵消多加的一次 */
+    /* 先目标页引用+1；若最终发现是「同页重映射」再减回来 */
     page_ref_inc(page);
     if (*ptep & PTE_V) {
         struct Page *old = pte2page(*ptep);
@@ -344,7 +350,7 @@ int page_insert(pde_t *pgdir, struct Page *page, uintptr_t la, uint32_t perm) {
     return 0;
 }
 
-/* pgdir_alloc_page - 分配一页并映射到 la（头文件已声明，供后续模块使用） */
+/* pgdir_alloc_page - 分配一块新物理页，再把它映射到 la */
 struct Page *pgdir_alloc_page(pde_t *pgdir, uintptr_t la, uint32_t perm) {
     struct Page *page = alloc_page();
     if (page != NULL) {

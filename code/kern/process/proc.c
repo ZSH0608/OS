@@ -230,30 +230,34 @@ init_main(void *arg)
 static void copy_thread(struct proc_struct *proc, uintptr_t esp, struct trapframe *tf);
 static int copy_mm(uint32_t clone_flags, struct proc_struct *proc);
 
-// alloc_proc - alloc a proc_struct and init all fields of proc_struct
+// alloc_proc：申请一块 PCB（proc_struct），并把字段设成安全初始值
 static struct proc_struct *
 alloc_proc(void)
 {
-    struct proc_struct *proc = kmalloc(sizeof(struct proc_struct));
+    struct proc_struct *proc = kmalloc(sizeof(struct proc_struct));//通过 kmalloc 获得一块内存，放proc_struct
     if (proc != NULL)
     {
-        proc->state = PROC_UNINIT;      // 已创建但尚未进入调度
-        proc->pid = -1;                 // 身份尚未分配
-        proc->runs = 0;                 // 尚未运行过
-        proc->kstack = 0;               // 内核栈待分配
-        proc->need_resched = 0;         // 暂不需要重调度
-        proc->parent = NULL;            // 父进程待挂接
-        proc->mm = NULL;                // 内核线程不持有独立 mm
-        memset(&(proc->context), 0, sizeof(struct context)); // 上下文清零
-        proc->tf = NULL;                // 中断帧待布置
-        proc->pgdir = boot_pgdir_pa;    // 共享内核页目录（物理地址）
+        proc->state = PROC_UNINIT;      // state：进程生命周期状态。PROC_UNINIT：已创建但尚未进入调度
+        proc->pid = -1;                 // 进程号。-1 表示还没正式分配
+        proc->runs = 0;                 // 被调度运行过的次数，初始为 0。
+        proc->kstack = 0;               // 该线程内核栈起始地址。0 表示还没分配
+        proc->need_resched = 0;         // 是否需要重新调度。0 表示暂时不需要。
+        proc->parent = NULL;            // 父进程指针。
+        proc->mm = NULL;                // mm：用户地址空间管理结构。内核线程没有独立用户地址空间，为 NULL。
+        memset(&(proc->context), 0, sizeof(struct context)); // 上下文清零（进程切换时要保存/恢复的寄存器集合）
+        proc->tf = NULL;                // 指向该进程中断帧的指针
+        proc->pgdir = boot_pgdir_pa;    // 页表根的物理地址，页目录基址则指向内核已经建立好的页表
         proc->flags = 0;                // 标志位清零
         memset(proc->name, 0, PROC_NAME_LEN + 1); // 进程名清零
     }
     return proc;
 }
 
-// proc_init - set up the first kernel thread idleproc and initproc
+// 初始化进程管理系统：建链表、创建 idleproc 和 initproc
+/*
+初始化管理链表，创建并登记 idleproc（0 号，空闲进程）和 initproc（1 号），
+并把 current 设为 idleproc。
+*/
 void
 proc_init(void)
 {
@@ -291,72 +295,84 @@ proc_init(void)
     assert(initproc != NULL && initproc->pid == 1);
 }
 
-// kernel_thread - create a kernel thread using "fn" function
+/*
+第一个内核线程的创建是通过 kernel_thread 函数来实现的。
+这个函数负责为新的内核线程创建一个初始化好的中断帧，并通过调用 do_fork 函数将其转化为一个新的进程，
+kernel_thread函数通过调用do_fork函数最终完成了内核线程的创建工作。
+（怎么调用 do_fork 函数？将中断帧的指针传递给do_fork函数，do_fork函数会根据中断帧的指针创建一个新的进程。）
+*/
 int
 kernel_thread(int (*fn)(void *), void *arg, uint32_t clone_flags)
 {
     struct trapframe tf;
     memset(&tf, 0, sizeof(struct trapframe));
-    // s0 放函数入口、s1 放参数，供 kernel_thread_entry 使用
+    // 把函数入口地址放进中断帧的 s0，之后 kernel_thread_entry 会用 s0 作为跳转目标（jalr s0）。
     tf.gpr.s0 = (uintptr_t)fn;
     tf.gpr.s1 = (uintptr_t)arg;
     // 置 SPP/SPIE、清 SIE：sret 后回到 S 态并恢复中断使能状态
-    tf.status = (read_csr(sstatus) | SSTATUS_SPP | SSTATUS_SPIE) & ~SSTATUS_SIE;
+    tf.status = (read_csr(sstatus) | SSTATUS_SPP | SSTATUS_SPIE) & ~SSTATUS_SIE;//sret 后仍留在 S 态（内核态），因为这是内核线程
     tf.epc = (uintptr_t)kernel_thread_entry;
     return do_fork(clone_flags | CLONE_VM, 0, &tf);
 }
 
-// do_fork - parent process for a new child process
-//    1. call alloc_proc to allocate a proc_struct
-//    2. call setup_kstack to allocate a kernel stack for child process
-//    3. call copy_mm to dup OR share mm according clone_flag
-//    4. call copy_thread to setup tf & context in proc_struct
-//    5. insert proc_struct into hash_list && proc_list
-//    6. call wakeup_proc to make the new child process RUNNABLE
-//    7. set ret vaule using child proc's pid
+//创建子进程/内核线程的完整流程，do_fork是创建线程的主要函数
+/*
+1. 分配并初始化进程控制块（alloc_proc函数）
+2. 分配并初始化内核栈（setup_kstack函数）
+3. 根据clone_flags决定是复制还是共享内存管理系统（copy_mm函数）
+4. 设置进程的中断帧和上下文（copy_thread函数）
+5. 把设置好的进程加入链表
+6. 将新建的进程设为就绪态
+7. 将返回值设为线程id
+*/
 int
 do_fork(uint32_t clone_flags, uintptr_t stack, struct trapframe *tf)
 {
     int ret = -E_NO_FREE_PROC;
-    struct proc_struct *proc;
+    struct proc_struct *proc;//即将创建的子进程 PCB 指针。
     if (nr_process >= MAX_PROCESS)
     {
         goto fork_out;
     }
     ret = -E_NO_MEM;
-    // 1. 分配并初始化进程控制块
+    // 1. 分配 PCB。（alloc_proc函数）
     if ((proc = alloc_proc()) == NULL)
     {
         goto fork_out;
     }
     proc->parent = current;
-    // 2. 分配并初始化内核栈
+
+    // 2. 给子进程分配内核栈（通常 2 页），起始地址写入 proc->kstack。失败：释放已分配的 PCB（kfree(proc)），再返回。（setup_kstack函数）
     if (setup_kstack(proc) != 0)
     {
         goto bad_fork_cleanup_proc;
     }
-    // 3. 复制/共享地址空间（本实验为占位）
+
+    // 3. 处理地址空间。本实验 copy_mm 几乎总是返回 0；若失败，要先回收内核栈，再回收 PCB。根据clone_flags决定是复制还是共享内存管理系统（copy_mm函数）
     if (copy_mm(clone_flags, proc) != 0)
     {
         goto bad_fork_cleanup_kstack;
     }
-    // 4. 布置中断帧与首次运行上下文
+
+    // 4. 在子进程内核栈上复制/布置中断帧，并设置 context，让它第一次被调度时能跑起来。
     copy_thread(proc, stack, tf);
-    // 5. 挂入 proc_list 与 hash_list（关中断保证原子性）
+
+    // 5. 把设置好的进程加入链表，挂入 proc_list 与 hash_list（这段必须关中断保证原子性）
     {
         bool intr_flag;
-        local_intr_save(intr_flag);
+        local_intr_save(intr_flag);//关中断，并把“之前是否开着中断”存进 intr_flag
         {
-            proc->pid = get_pid();
-            hash_proc(proc);
-            list_add(&proc_list, &(proc->list_link));
-            nr_process ++;
+            proc->pid = get_pid();//分配一个未占用的 pid，写入 proc->pid
+            hash_proc(proc);//按 pid 挂到哈希表 hash_list
+            list_add(&proc_list, &(proc->list_link));//挂到全局进程链表
+            nr_process ++;//进程计数器加 1
         }
-        local_intr_restore(intr_flag);
+        local_intr_restore(intr_flag);//按 intr_flag 恢复中断
     }
-    // 6. 置为就绪态
+    // 6. 将新建的进程设为就绪态，把子进程状态设为 PROC_RUNNABLE（就绪太），可被调度选中。
     wakeup_proc(proc);
-    // 7. 返回子进程 pid
+
+    // 7. 返回子进程 pid，将返回值设为线程id
     ret = proc->pid;
 
 fork_out:
@@ -369,26 +385,30 @@ bad_fork_cleanup_proc:
     goto fork_out;
 }
 
-// copy_thread - setup the trapframe on the process's kernel stack top and
-//             - setup the kernel entry point and stack of process
+//用于将当前进程的中断帧复制到新进程的内核栈中
+/*
+我们首先在上面分配的内核栈上分配出一片空间来保存trapframe。然后，我们将trapframe中的a0寄存器（返回值）设置为0，说明这个进程是一个子进程。
+之后我们将上下文中的ra设置为了forkret函数的入口，并且把trapframe放在上下文的栈顶。
+*/
 static void
 copy_thread(struct proc_struct *proc, uintptr_t esp, struct trapframe *tf)
 {
-    // 把中断帧放到新进程内核栈顶端
+    // 把中断帧 trapframe放到新进程内核栈顶端
     proc->tf = (struct trapframe *)(proc->kstack + KSTACKSIZE) - 1;
     *(proc->tf) = *tf;
 
-    // a0=0 表示该执行体是"子进程"（fork 的返回值为 0）
+    // a0=0 ，表示这个进程是一个子进程
     proc->tf->gpr.a0 = 0;
     // 若调用方未指定栈，则使用内核栈顶（即中断帧自身位置）
     proc->tf->gpr.sp = (esp == 0) ? (uintptr_t)proc->tf : esp;
 
-    // 首次运行链路：switch_to 恢复 context 后回到 forkret -> forkrets -> __trapret
+    // switch_to 恢复后执行的“返回地址”。设为 forkret，所以新线程第一次被调度时，会先进入 forkret
     proc->context.ra = (uintptr_t)forkret;
+    //切换后使用的栈指针，设为中断帧所在地址。之后 forkret → forkrets(current->tf) → __trapret 按这份 trapframe 恢复寄存器并 sret，跳到 kernel_thread_entry，再调用真正的 fn。
     proc->context.sp = (uintptr_t)(proc->tf);
 }
 
-// copy_mm - process "proc" duplicate OR share process "current" mm according clone_flags
+// 本应处理地址空间复制/共享；lab4 内核线程阶段只做占位，直接成功返回
 static int
 copy_mm(uint32_t clone_flags, struct proc_struct *proc)
 {
@@ -398,12 +418,16 @@ copy_mm(uint32_t clone_flags, struct proc_struct *proc)
 }
 /* ==================== 改代码结束 ==================== */
 
-//LAB4 function3 YOUR CODE
+//LAB4 function3 2412888
 /* ==================== 开始改代码 ====================
  * 功能模块三：进程切换与空闲循环
  * proc_run 在关中断临界区内更新 current、按需切换 Sv39 页表并调用
  * switch_to；cpu_idle 持续检查 need_resched，有需求时发起调度。
  * ==================== */
+ /*
+ 在就绪态进程链表找到合适的进程后，调用该 proc_run() 函数：保存当前进程current的进程上下文，恢复新进程的执行现场，完成进程切换。
+ 让参数指定的进程成为当前运行进程：更新 current，必要时换页表，再调用 switch_to 切换寄存器上下文
+ */
 void
 proc_run(struct proc_struct *proc)
 {
@@ -417,10 +441,12 @@ proc_run(struct proc_struct *proc)
 
     local_intr_save(intr_flag);
     {
-        /* 先更新 current：新线程首次运行经 forkret 时需读取 current->tf */
+        /* 1. 把全局 current 改成 proc */
         current = proc;
 
-        /* 页表不同才切换；satp.MODE 位于 bit[63:60]，必须使用 Sv39 格式。
+        /* 2. 若新旧进程页表不同，写入新的 satp 并刷新 TLB
+
+        页表不同才切换；satp.MODE 位于 bit[63:60]，必须使用 Sv39 格式。
          * libs/riscv.h 的 lsatp() 是 Sv32 语义，不能用于本实验。 */
         if (proc->pgdir != prev->pgdir)
         {
@@ -428,18 +454,22 @@ proc_run(struct proc_struct *proc)
                                 (proc->pgdir >> RISCV_PGSHIFT));
             flush_tlb();
         }
-
+        //3. 调用 switch_to，保存旧进程上下文、恢复新进程上下文
         switch_to(&(prev->context), &(proc->context));
     }
     local_intr_restore(intr_flag);
 }
 
+/*
+idleproc 的主循环。
+内核初始化结束后会进入这里：没有其它事时就空转；一旦需要调度，就调用 schedule()
+*/
 void
 cpu_idle(void)
 {
     while (1)
     {
-        if (current->need_resched)
+        if (current->need_resched)//need_resched = 1，表示需要调度
         {
             schedule();
         }
